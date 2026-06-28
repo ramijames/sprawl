@@ -1,0 +1,51 @@
+name: Sprawl
+options:
+  bundleIdPrefix: com.ramijames
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    # v1.12.0+ adds a Metal renderer that needs Xcode's separately-downloadable Metal
+    # Toolchain; 1.11.2 is the newest tag that builds without it.
+    exactVersion: 1.11.2
+  CodeEditSourceEditor:
+    url: https://github.com/CodeEditApp/CodeEditSourceEditor
+    exactVersion: 0.15.2
+targets:
+  Sprawl:
+    type: application
+    platform: macOS
+    sources:
+      - Sprawl
+    settings:
+      base:
+        # Allow the post-build copy script to write outside DerivedData (into ./build).
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    dependencies:
+      - package: SwiftTerm
+      - package: CodeEditSourceEditor
+    postBuildScripts:
+      # Mirror the freshly built app to a predictable, gitignored ./build/Sprawl.app so the
+      # binary is always at the same path (instead of the hashed DerivedData location).
+      # Runs after every build in both Xcode and `xcodebuild`.
+      - name: Copy app to ./build
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          DEST="$PROJECT_DIR/build/$WRAPPER_NAME"
+          rm -rf "$DEST"
+          mkdir -p "$PROJECT_DIR/build"
+          cp -R "$TARGET_BUILD_DIR/$WRAPPER_NAME" "$DEST"
+          # cp invalidates the nested ad-hoc signatures (debug dylib), so re-sign the copy.
+          codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true

@@ -5,7 +5,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = WorkspaceStore()
     private var mainWindowController: MainWindowController?
     private var scrollMonitor: Any?
+    private var clickMonitor: Any?
     private var pendingSave: DispatchWorkItem?
+    /// Carries fractional scroll lines across the many small events a trackpad emits.
+    private var terminalScrollAccumulator: CGFloat = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
@@ -49,20 +52,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.save(state)
     }
 
-    /// SwiftTerm consumes trackpad scroll for its own scrollback, so it never reaches the canvas.
-    /// This monitor redirects scrolls that land on a terminal to the enclosing canvas (so you can
-    /// pan/zoom over terminals); hold ⌥ to scroll the terminal's scrollback instead.
+    /// Plain scroll over a terminal scrolls that terminal (its scrollback, or — on the alternate
+    /// screen — the running TUI via arrow keys). SwiftTerm ignores trackpad scroll itself, so we
+    /// drive it. Hold ⌥ to pan/zoom the canvas instead.
     private func installScrollPanMonitor() {
-        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard !event.modifierFlags.contains(.option),
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self,
                   let contentView = event.window?.contentView,
                   let hit = contentView.hitTest(event.locationInWindow),
-                  hit.isInsideTerminal,
-                  let scrollView = hit.enclosingScrollView as? CanvasScrollView else {
+                  hit.isInsideTerminal else {
+                return event   // not over a terminal: normal canvas pan/zoom
+            }
+            if event.modifierFlags.contains(.option) {
+                (hit.enclosingScrollView as? CanvasScrollView)?.scrollWheel(with: event)
+                return nil     // ⌥ over a terminal: pan the canvas
+            }
+            let points = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY * 16
+            hit.scrollEnclosingTerminal(points: points, locationInWindow: event.locationInWindow,
+                                        accumulator: &self.terminalScrollAccumulator)
+            return nil
+        }
+
+        // Clicking anywhere inside a panel selects that item — including terminal/document CONTENT,
+        // which is the SwiftTerm/editor view (not the WindowView), so it never reaches the panel's
+        // own mouseDown. Canvas (folder/empty) clicks fall through to CanvasView.mouseDown.
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self,
+                  let contentView = event.window?.contentView,
+                  let hit = contentView.hitTest(event.locationInWindow),
+                  let windowView = hit.enclosingWindowView,
+                  let item = self.model.item(for: windowView) else {
                 return event
             }
-            scrollView.scrollWheel(with: event)
-            return nil
+            self.model.selectItem(item)
+            return event
         }
     }
 
@@ -105,6 +128,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newProjectItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(newProjectItem)
         fileMenuItem.submenu = fileMenu
+
+        // Edit menu — standard responder-chain actions so ⌘X/⌘C/⌘V/⌘A reach the focused
+        // terminal or text field (SwiftTerm and NSTextField implement these). Without it,
+        // ⌘V has nothing to route to and pasting into a terminal silently fails.
+        let editMenuItem = NSMenuItem()
+        mainMenu.addItem(editMenuItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
 
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)

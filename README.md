@@ -1,11 +1,11 @@
 # Sprawl
 
-**A canvas-based developer environment for macOS.** Sprawl gives you an infinite,
+**A canvas-based developer environment for macOS.** Sprawl gives you one infinite,
 zoomable/pannable surface onto which you place freely draggable and resizable "windows" —
-each hosting a **live terminal** or a **code/text editor** — and organizes them into multiple
-switchable projects. Think of it as a spatial workbench for the way you actually work: related
-shells and files laid out side by side on one canvas, the whole layout saved and restored
-exactly as you left it.
+each hosting a **live terminal** or a **code/text editor** — grouped into **projects** that all
+live side by side on the same canvas. Think of it as a spatial workbench for the way you
+actually work: related shells and files laid out together, every project visible at once, the
+whole layout saved and restored exactly as you left it.
 
 It's a native Swift/AppKit app (no Electron, no web view), so terminals are real local shells
 with full PTY access and the canvas is GPU-composited for smooth zooming over many live panels.
@@ -22,12 +22,16 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   (via [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)).
 - **Code & text editor** — open, edit, and save files with syntax highlighting and line
   numbers (via [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor)).
-- **Projects** — group terminals and documents into separate canvases; switch between them
-  from the sidebar without tearing down live sessions.
+- **Projects on one shared canvas** — every project is a labeled "folder" card that wraps its
+  own windows; they're laid out spatially across the same surface, not hidden behind tabs.
+  Click a project in the sidebar to pan/zoom straight to it. Double-click a folder's tab to
+  rename it.
+- **Selection** — a single white outline shows what's selected: click empty canvas to select
+  nothing, a folder to select that project, or a window/terminal to select that item.
 - **Persistent workspace** — close the app and reopen it to find everything exactly where you
   left it (see [Persistence](#persistence)).
 - **Dark, terminal-like UI** — chrome-less window with a unified toolbar, dark vibrancy
-  sidebar, and per-project boundary frames.
+  sidebar, and each project drawn as a "folder" card with its name on a top-left tab.
 
 ---
 
@@ -83,16 +87,26 @@ button, or the keyboard:
 | Open File…      | ⌘O       |
 | Save            | ⌘S       |
 | New Project     | ⌘⇧N      |
+| Cut / Copy / Paste | ⌘X / ⌘C / ⌘V |
+| Select All      | ⌘A       |
 | Zoom In         | ⌘+       |
 | Zoom Out        | ⌘−       |
 | Actual Size     | ⌘0       |
 
+**Selecting & renaming**
+
+- Click empty canvas to select nothing, a **folder** to select that project, or a
+  **window/terminal** to select that item — the selection shows as a single white outline.
+- Click a project in the **sidebar** to pan/zoom straight to it. **Double-click a folder tab**
+  to rename it (Return commits, Esc / clicking away cancels).
+
 **Canvas navigation**
 
-- **Pan:** two-finger scroll / trackpad drag.
+- **Pan:** two-finger scroll / trackpad drag over empty canvas.
 - **Zoom:** pinch, or **⌘ + scroll** (zooms toward the cursor), or the toolbar zoom control.
-- Scrolling over a terminal pans the canvas; **hold ⌥** to scroll the terminal's own
-  scrollback instead.
+- Scrolling over a **terminal** scrolls *that terminal* — its scrollback, or the running
+  full-screen app (e.g. `less`, `vim`, a TUI) via wheel/arrow events. **Hold ⌥** while scrolling
+  over a terminal to pan the canvas instead.
 
 ---
 
@@ -107,9 +121,10 @@ State is saved continuously (debounced) and on quit to:
 Reopening the app restores:
 
 - **Window** position and size.
-- **Projects** and which one was current.
-- **Panels** — their kind, title, position, size, and stacking order on each canvas.
-- **Canvas viewport** — each project's zoom level and scroll position.
+- **Projects** — their names, which one was current, and where each folder sits on the shared
+  canvas (so empty folders keep their spot).
+- **Panels** — their kind, title, position, size, and stacking order on the canvas.
+- **Canvas viewport** — the global zoom level and scroll position.
 - **Documents** — their file path and exact in-memory text (so unsaved edits survive).
 - **Terminals** — relaunched as fresh login shells in their last working directory. (A live
   shell process and its scrollback can't be serialized, so the process itself does not carry

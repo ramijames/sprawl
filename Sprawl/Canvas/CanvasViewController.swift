@@ -1,14 +1,10 @@
 import AppKit
 
-/// Hosts the zoomable scroll view and shows the current project's canvas. Remembers each
-/// project's viewport (zoom + scroll) so switching projects — or relaunching the app —
-/// re-frames the canvas exactly where it was left.
+/// Hosts the zoomable scroll view over the single shared canvas. The viewport (zoom + scroll) is
+/// now global; it's captured into / restored from the model rather than per project.
 final class CanvasViewController: NSViewController {
     private let model: AppModel
     private let scrollView = CanvasScrollView()
-    /// The project whose canvas is currently in the scroll view (so we can flush its viewport
-    /// before swapping to another, and before snapshotting on quit).
-    private weak var displayedProject: Project?
 
     /// The canvas was panned or zoomed — request an autosave of the viewport.
     var onViewportChange: (() -> Void)?
@@ -30,66 +26,60 @@ final class CanvasViewController: NSViewController {
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
+        model.canvas.frame = NSRect(origin: .zero, size: CanvasView.canvasSize)
+        scrollView.documentView = model.canvas
         observeViewport()
     }
 
-    func showCurrentProject() {
-        // Flush the outgoing project's viewport before swapping surfaces.
-        if let outgoing = displayedProject, outgoing !== model.currentProject {
-            captureViewport(into: outgoing)
+    /// Apply the saved global viewport on launch, or center on the canvas if none.
+    func restoreGlobalViewport() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let clip = self.scrollView.contentView
+            if let v = self.model.viewport {
+                self.scrollView.magnification = v.magnification
+                clip.scroll(to: v.scrollOrigin)
+            } else {
+                clip.scroll(to: NSPoint(
+                    x: (CanvasView.canvasSize.width - clip.bounds.width) / 2,
+                    y: (CanvasView.canvasSize.height - clip.bounds.height) / 2))
+            }
+            self.scrollView.reflectScrolledClipView(clip)
         }
-        guard let project = model.currentProject else { return }
-        project.canvas.frame = NSRect(origin: .zero, size: CanvasView.canvasSize)
-        scrollView.documentView = project.canvas
-        displayedProject = project
-        if project.hasViewport {
-            restoreViewport(from: project)
-        } else {
-            centerViewport()
-        }
+    }
+
+    /// Flush the live viewport into the model so the next snapshot is current.
+    func captureCurrentViewport() {
+        model.viewport = ViewportState(magnification: scrollView.magnification,
+                                       scrollOrigin: scrollView.contentView.bounds.origin)
     }
 
     func focusItem(_ item: WorkItem) {
         guard let window = item.window else { return }
-        if window.superview !== scrollView.documentView { showCurrentProject() }
-        (scrollView.documentView as? CanvasView)?.bringToFront(window)
+        model.canvas.bringToFront(window)
         window.scrollToVisible(window.bounds)
         item.terminal?.focus()
     }
 
-    /// Write the live scroll/zoom of the on-screen project back into its model, so a snapshot
-    /// taken right after reflects the current viewport.
-    func captureCurrentViewport() {
-        if let project = displayedProject { captureViewport(into: project) }
-    }
-
-    private func captureViewport(into project: Project) {
-        project.magnification = scrollView.magnification
-        project.scrollOrigin = scrollView.contentView.bounds.origin
-        project.hasViewport = true
-    }
-
-    private func restoreViewport(from project: Project) {
+    /// Pan/zoom so the project's folder is framed in the viewport.
+    func focusProject(_ project: Project) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.scrollView.magnification = project.magnification
-            let clip = self.scrollView.contentView
-            clip.scroll(to: project.scrollOrigin)
+            let padded = self.model.canvas.folderBounds(for: project).insetBy(dx: -80, dy: -80)
+            let onScreen = self.scrollView.contentView.frame.size   // unscaled clip size
+            guard padded.width > 0, padded.height > 0, onScreen.width > 0 else { return }
+            let fit = min(onScreen.width / padded.width, onScreen.height / padded.height)
+            let mag = max(self.scrollView.minMagnification, min(self.scrollView.maxMagnification, fit))
+            self.scrollView.magnification = mag
+            let clip = self.scrollView.contentView   // bounds now reflect the new magnification
+            clip.scroll(to: NSPoint(x: padded.midX - clip.bounds.width / 2,
+                                    y: padded.midY - clip.bounds.height / 2))
             self.scrollView.reflectScrolledClipView(clip)
+            self.onViewportChange?()
         }
     }
 
-    private func centerViewport() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let clip = self.scrollView.contentView
-            let target = NSPoint(
-                x: (CanvasView.canvasSize.width - clip.bounds.width) / 2,
-                y: (CanvasView.canvasSize.height - clip.bounds.height) / 2)
-            clip.scroll(to: target)
-            self.scrollView.reflectScrolledClipView(clip)
-        }
-    }
+    func freeAnchorNearViewport() -> NSPoint { model.canvas.freeAnchorNearViewport() }
 
     // MARK: - Viewport change observation (drives autosave)
 

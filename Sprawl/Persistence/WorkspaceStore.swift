@@ -18,7 +18,14 @@ final class WorkspaceStore {
     func load() -> WorkspaceState? {
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
         do {
-            return try JSONDecoder().decode(WorkspaceState.self, from: data)
+            var state = try JSONDecoder().decode(WorkspaceState.self, from: data)
+            if state.version == nil {
+                // Legacy per-project-canvas layout: migrate to the shared canvas and rewrite the
+                // file as v2 immediately (idempotent, so a crash before the first autosave is safe).
+                state.migrateToSharedCanvasIfNeeded()
+                save(state)
+            }
+            return state
         } catch {
             // The file exists but is unreadable. Preserve it (rather than let the next autosave
             // overwrite the only copy) and start fresh.

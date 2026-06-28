@@ -5,6 +5,9 @@ enum Palette {
     static let canvas        = srgb(0x21, 0x20, 0x29)   // #212029 (matches the sidebar)
     static let sidebarTint   = srgb(0x21, 0x20, 0x29)   // #212029
     static let projectFrame  = srgb(0x71, 0x6C, 0x90)   // #716C90
+    static let projectFill   = srgb(0x45, 0x42, 0x4F)   // folder body/tab fill (raised card)
+    static let projectTabText = srgb(0xB4, 0xB0, 0xC6, 0.85)  // muted name on the tab
+    static let projectEditorFill = srgb(0x2C, 0x2A, 0x36)    // rename field box (darker than folder)
 
     static let panelBody      = srgb(0x29, 0x28, 0x3A)
     static let panelTitleBar  = srgb(0x38, 0x36, 0x4A)

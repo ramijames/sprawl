@@ -12,7 +12,10 @@ settings:
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
     CODE_SIGN_STYLE: Manual
-    CODE_SIGN_IDENTITY: "-"
+    # Stable self-signed identity (created in Keychain Access) so the app's code identity
+    # doesn't change every rebuild — macOS TCC then remembers granted permissions across builds
+    # instead of re-prompting. Falls back to ad-hoc ("-") on machines without this cert.
+    CODE_SIGN_IDENTITY: "Sprawl Dev"
 packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
@@ -47,5 +50,7 @@ targets:
           rm -rf "$DEST"
           mkdir -p "$PROJECT_DIR/build"
           cp -R "$TARGET_BUILD_DIR/$WRAPPER_NAME" "$DEST"
-          # cp invalidates the nested ad-hoc signatures (debug dylib), so re-sign the copy.
-          codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true
+          # cp invalidates the nested signatures, so re-sign the copy with the same identity
+          # (stable cert if set, else ad-hoc) so it launches and keeps a consistent code identity.
+          codesign --force --deep --sign "${CODE_SIGN_IDENTITY:--}" "$DEST" >/dev/null 2>&1 \
+            || codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true

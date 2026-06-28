@@ -17,6 +17,10 @@ final class WindowView: NSView {
     var title: String = "Untitled" {
         didSet { needsDisplay = true }
     }
+    /// Whether this item is selected — draws a white outline around the panel.
+    var isSelected: Bool = false {
+        didSet { guard isSelected != oldValue else { return }; needsDisplay = true }
+    }
     var onClose: ((WindowView) -> Void)?
     var onFocus: ((WindowView) -> Void)?
     /// Called when the panel is moved or resized (so the canvas can redraw the project frame).
@@ -134,6 +138,13 @@ final class WindowView: NSView {
             x: 32,
             y: bounds.height - Self.titleBarHeight + (Self.titleBarHeight - textSize.height) / 2)
         title.draw(at: textOrigin, withAttributes: attrs)
+
+        if isSelected {
+            let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5), xRadius: radius, yRadius: radius)
+            NSColor.white.setStroke()
+            outline.lineWidth = 3
+            outline.stroke()
+        }
     }
 
     // MARK: - Mouse: move & resize

@@ -3,7 +3,6 @@ import AppKit
 final class MainWindowController: NSWindowController, NSToolbarDelegate {
     private let model: AppModel
     private var splitViewController: MainSplitViewController!
-    private weak var projectNameField: NSTextField?
 
     init(model: AppModel) {
         self.model = model
@@ -56,9 +55,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
                            name: NSWindow.didResizeNotification, object: window)
 
         let split = MainSplitViewController(model: model)
-        split.onProjectChanged = { [weak self] project in
-            self?.projectNameField?.stringValue = project?.name ?? ""
-        }
         splitViewController = split
         window.contentViewController = split
 
@@ -73,34 +69,21 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .projectName, .flexibleSpace, .zoomControls, .addEntry]
+        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .zoomControls, .addEntry]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .projectName, .flexibleSpace, .space, .zoomControls, .addEntry]
+        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .space, .zoomControls, .addEntry]
     }
 
     func toolbar(_ toolbar: NSToolbar,
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
-        case .projectName: return makeProjectNameItem()
         case .zoomControls: return makeZoomItem()
         case .addEntry: return makeAddItem()
         default: return nil
         }
-    }
-
-    private func makeProjectNameItem() -> NSToolbarItem {
-        let label = NSTextField(labelWithString: model.currentProject?.name ?? "")
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        label.textColor = Palette.sidebarText
-        label.lineBreakMode = .byTruncatingTail
-        projectNameField = label
-        let item = NSToolbarItem(itemIdentifier: .projectName)
-        item.view = label
-        item.visibilityPriority = .high
-        return item
     }
 
     private func makeZoomItem() -> NSToolbarItem {
@@ -149,7 +132,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
 }
 
 private extension NSToolbarItem.Identifier {
-    static let projectName = NSToolbarItem.Identifier("projectName")
     static let zoomControls = NSToolbarItem.Identifier("zoomControls")
     static let addEntry = NSToolbarItem.Identifier("addEntry")
 }

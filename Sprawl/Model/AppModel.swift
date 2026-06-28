@@ -1,7 +1,7 @@
 import AppKit
 
 /// A single item living inside a project: a terminal or a document. Each is backed by a
-/// `WindowView` panel on the project's canvas.
+/// `WindowView` panel on the shared canvas.
 final class WorkItem {
     enum Kind {
         case terminal
@@ -30,67 +30,93 @@ final class WorkItem {
     }
 }
 
-/// A work canvas. Each project owns its own canvas view (so switching projects swaps the
-/// whole surface) and the list of items placed on it.
+/// A project: a named group of items, rendered as one "folder" on the shared canvas. Its folder
+/// wraps wherever its windows are; `anchor` is the content top-left used while it's empty and as
+/// the seed for spawning its first window.
 final class Project {
     let id: UUID
     var name: String
-    let canvas: CanvasView
     var items: [WorkItem] = []
+    /// Content-region top-left in shared-canvas coordinates.
+    var anchor: NSPoint = .zero
 
-    /// Saved viewport (canvas zoom + scroll position), so switching to or relaunching this
-    /// project re-frames the canvas exactly as it was left.
-    var magnification: CGFloat = 1.0
-    var scrollOrigin: CGPoint = .zero
-    var hasViewport: Bool = false
-
-    init(name: String, id: UUID = UUID()) {
+    init(name: String, id: UUID = UUID(), anchor: NSPoint = .zero) {
         self.id = id
         self.name = name
-        self.canvas = CanvasView(frame: .zero)
+        self.anchor = anchor
     }
 }
 
-/// Top-level app state: the projects and which one is current. Emits change callbacks so the
-/// sidebar and canvas stay in sync without tight coupling.
+/// Top-level app state. Owns the single shared `CanvasView` (so it exists at restore time, before
+/// the UI is built) and the projects on it. What is selected (nothing / a project / an item) is a
+/// single source of truth here.
 final class AppModel {
+    /// The single canvas hosting every project's windows.
+    let canvas = CanvasView(frame: .zero)
+
     private(set) var projects: [Project] = []
     private(set) var currentProject: Project?
     /// The document most recently created/focused — the target for Save.
     weak var activeDocumentItem: WorkItem?
 
+    /// Global canvas viewport (zoom + scroll), persisted across launches.
+    var viewport: ViewportState?
+
+    enum Selection: Equatable {
+        case none
+        case project(UUID)
+        case item(UUID)
+    }
+    private(set) var selection: Selection = .none
+
     /// Structure changed (project/item added or removed) — sidebar should reload.
     var onModelChange: (() -> Void)?
-    /// The current project changed — canvas should swap.
+    /// The current project changed — used only for the toolbar label now (no canvas swap).
     var onCurrentProjectChange: (() -> Void)?
     /// Something worth persisting changed (layout, contents, viewport, …) — request a save.
     var onPersistableChange: (() -> Void)?
+    /// Selection changed — drives white-outline visuals (item windows + the selected folder).
+    var onSelectionChange: (() -> Void)?
+
+    init() {
+        canvas.model = self
+        canvas.onLayoutChange = { [weak self] in self?.onPersistableChange?() }
+        canvas.onRenameProject = { [weak self] id, newName in
+            guard let self, let project = self.projects.first(where: { $0.id == id }) else { return }
+            project.name = newName
+            self.canvas.needsDisplay = true
+            self.onModelChange?()             // sidebar reflects the new name
+            self.onPersistableChange?()
+        }
+        canvas.onSelectProjectFolder = { [weak self] id in
+            guard let self, let project = self.projects.first(where: { $0.id == id }) else { return }
+            self.selectProject(project)
+        }
+        canvas.onClearSelection = { [weak self] in self?.clearSelection() }
+    }
+
+    // MARK: - Projects & items
 
     @discardableResult
-    func addProject(name: String) -> Project {
-        let project = Project(name: name)
-        wireCanvas(of: project)
+    func addProject(name: String, anchor: NSPoint = .zero) -> Project {
+        let project = Project(name: name, anchor: anchor)
         projects.append(project)
         if currentProject == nil { currentProject = project }
+        canvas.needsDisplay = true
         onModelChange?()
         onPersistableChange?()
         return project
     }
 
-    /// Route a project canvas's layout edits (move/resize/raise/add/close) into autosave.
-    private func wireCanvas(of project: Project) {
-        project.canvas.onLayoutChange = { [weak self] in self?.onPersistableChange?() }
-    }
-
-    func selectProject(_ project: Project) {
-        guard currentProject !== project else { return }
-        currentProject = project
-        onCurrentProjectChange?()
-        onPersistableChange?()
-    }
-
     func project(owning item: WorkItem) -> Project? {
         projects.first { $0.items.contains { $0 === item } }
+    }
+
+    func item(for window: WindowView) -> WorkItem? {
+        for project in projects {
+            if let item = project.items.first(where: { $0.window === window }) { return item }
+        }
+        return nil
     }
 
     @discardableResult
@@ -106,16 +132,30 @@ final class AppModel {
             name = "\(base) \(count)"
         }
 
-        let item = installItem(in: project, kind: kind, name: name, frame: nil,
+        let item = installItem(in: project, kind: kind, name: name,
+                               frame: spawnFrame(in: project),
                                documentURL: url, documentText: nil,
                                terminalDirectory: nil, focus: true)
+        select(.item(item.id))
         onModelChange?()
         onPersistableChange?()
         return item
     }
 
-    /// Builds a panel (terminal or document) on a project's canvas and wires it up. Shared by
-    /// `addItem` (new items, cascaded position, focused) and `restore` (saved frame, no focus).
+    /// Where a new window for a project spawns: cascaded near its existing windows, or at its
+    /// anchor when empty, so it joins the project's folder instead of the viewport center.
+    private func spawnFrame(in project: Project, size: NSSize = NSSize(width: 460, height: 320)) -> NSRect {
+        let frames = project.items.compactMap { $0.window?.frame }
+        guard let first = frames.first else {
+            return NSRect(origin: project.anchor, size: size)
+        }
+        let union = frames.dropFirst().reduce(first) { $0.union($1) }
+        let step = CGFloat((project.items.count % 6) * 28)
+        return NSRect(x: union.minX + step, y: union.minY + step, width: size.width, height: size.height)
+    }
+
+    /// Builds a panel (terminal or document) on the shared canvas and wires it up. Shared by
+    /// `addItem` (new) and `restore` (saved frame, no focus).
     @discardableResult
     private func installItem(in project: Project,
                              kind: WorkItem.Kind,
@@ -125,24 +165,16 @@ final class AppModel {
                              documentText: String?,
                              terminalDirectory: String?,
                              focus: Bool) -> WorkItem {
-        let window = project.canvas.addWindow(title: name, frame: frame)
+        let window = canvas.addWindow(title: name, frame: frame)
         let item = WorkItem(name: name, kind: kind, window: window)
-        window.onClose = { [weak self, weak project] closedWindow in
+        window.onClose = { [weak self, weak project, weak item] closedWindow in
             guard let self, let project else { return }
             closedWindow.removeFromSuperview()
             project.items.removeAll { $0.window === closedWindow }
-            project.canvas.needsDisplay = true   // refresh the project boundary frame
+            if let item, self.selection == .item(item.id) { self.clearSelection() }
+            self.canvas.needsDisplay = true
             self.onModelChange?()
             self.onPersistableChange?()
-        }
-
-        // Track the active document (for Save) whenever its window is focused.
-        let previousFocus = window.onFocus
-        window.onFocus = { [weak self, weak item] focused in
-            previousFocus?(focused)
-            if let self, let item, item.kind == .document {
-                self.activeDocumentItem = item
-            }
         }
 
         switch kind {
@@ -172,15 +204,62 @@ final class AppModel {
         return item
     }
 
+    // MARK: - Selection (canvas / project / item — mutually exclusive)
+
+    func select(_ newSelection: Selection) {
+        guard selection != newSelection else { return }
+        selection = newSelection
+        applySelectionVisuals()
+        onSelectionChange?()
+    }
+
+    func clearSelection() { select(.none) }
+
+    func selectProject(_ project: Project) {
+        setCurrentProject(project)
+        select(.project(project.id))
+    }
+
+    func selectItem(_ item: WorkItem) {
+        if let owner = project(owning: item) { setCurrentProject(owner) }
+        if item.kind == .document { activeDocumentItem = item }
+        select(.item(item.id))
+    }
+
+    private func setCurrentProject(_ project: Project) {
+        guard currentProject !== project else { return }
+        currentProject = project
+        onCurrentProjectChange?()
+        onPersistableChange?()
+    }
+
+    private func applySelectionVisuals() {
+        switch selection {
+        case .none:
+            canvas.selectedProjectID = nil
+        case .project(let id):
+            canvas.selectedProjectID = id
+        case .item:
+            canvas.selectedProjectID = nil
+        }
+        for project in projects {
+            for item in project.items {
+                let isSel: Bool = { if case .item(let id) = selection { return id == item.id }; return false }()
+                item.window?.isSelected = isSel
+            }
+        }
+    }
+
     // MARK: - Persistence
 
     /// Capture the full workspace as a serializable snapshot.
     func snapshot() -> WorkspaceState {
         var state = WorkspaceState()
+        state.version = 2
         state.currentProjectID = currentProject?.id
+        state.viewport = viewport
         state.projects = projects.map { project in
-            // Order items back-to-front by their window's z-order in the canvas subviews.
-            let order = project.canvas.subviews
+            let order = canvas.subviews
             func zIndex(_ item: WorkItem) -> Int {
                 guard let w = item.window else { return Int.max }
                 return order.firstIndex(of: w) ?? Int.max
@@ -194,26 +273,24 @@ final class AppModel {
                     documentText: item.document?.model.text,
                     workingDirectory: item.terminal?.currentDirectory)
             }
-            return ProjectState(
-                id: project.id,
-                name: project.name,
-                items: items,
-                magnification: project.magnification,
-                scrollOrigin: project.scrollOrigin,
-                hasViewport: project.hasViewport)
+            // Anchor stays meaningful: content origin for non-empty, the stored anchor otherwise.
+            let anchor: CGPoint
+            if let first = items.first?.frame {
+                anchor = items.dropFirst().reduce(first) { $0.union($1.frame) }.origin
+            } else {
+                anchor = project.anchor
+            }
+            return ProjectState(id: project.id, name: project.name, items: items, anchor: anchor)
         }
         return state
     }
 
-    /// Rebuild the workspace from a snapshot. Called once at launch, before the UI is wired,
-    /// so the change callbacks are still nil (no premature saves/reloads).
+    /// Rebuild the workspace from a snapshot. Called once at launch, before the UI is wired, so
+    /// the change callbacks are still nil (no premature saves/reloads).
     func restore(_ state: WorkspaceState) {
+        viewport = state.viewport
         for ps in state.projects {
-            let project = Project(name: ps.name, id: ps.id)
-            project.magnification = ps.magnification
-            project.scrollOrigin = ps.scrollOrigin
-            project.hasViewport = ps.hasViewport
-            wireCanvas(of: project)
+            let project = Project(name: ps.name, id: ps.id, anchor: ps.anchor ?? .zero)
             projects.append(project)
 
             for item in ps.items {
@@ -233,6 +310,10 @@ final class AppModel {
             currentProject = projects.first { $0.id == id } ?? projects.first
         } else {
             currentProject = projects.first
+        }
+        if let current = currentProject {
+            selection = .project(current.id)
+            canvas.selectedProjectID = current.id
         }
     }
 }

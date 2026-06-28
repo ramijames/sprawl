@@ -40,7 +40,7 @@ final class MainSplitViewController: NSSplitViewController {
         if isFreshLaunch {
             model.addProject(name: "Project 1")
         }
-        canvasVC.showCurrentProject()
+        canvasVC.restoreGlobalViewport()
         sidebarVC.reload()
         onProjectChanged?(model.currentProject)
 
@@ -60,19 +60,20 @@ final class MainSplitViewController: NSSplitViewController {
 
     private func wireModel() {
         model.onModelChange = { [weak self] in self?.sidebarVC.reload() }
+        // Current project changed — toolbar label only now (no canvas swap on the shared surface).
         model.onCurrentProjectChange = { [weak self] in
             guard let self else { return }
-            self.canvasVC.showCurrentProject()
             self.onProjectChanged?(self.model.currentProject)
         }
 
-        sidebarVC.onSelectProject = { [weak self] project in self?.model.selectProject(project) }
+        sidebarVC.onSelectProject = { [weak self] project in
+            guard let self else { return }
+            self.model.selectProject(project)
+            self.canvasVC.focusProject(project)
+        }
         sidebarVC.onSelectItem = { [weak self] item in
             guard let self else { return }
-            if let owner = self.model.project(owning: item) {
-                self.model.selectProject(owner)
-            }
-            if item.kind == .document { self.model.activeDocumentItem = item }
+            self.model.selectItem(item)
             self.canvasVC.focusItem(item)
         }
         sidebarVC.onAddItem = { [weak self] kind in self?.model.addItem(kind: kind) }
@@ -88,8 +89,10 @@ final class MainSplitViewController: NSSplitViewController {
     @objc func newDocument(_ sender: Any?) { model.addItem(kind: .document) }
 
     @objc func newProject(_ sender: Any?) {
-        let project = model.addProject(name: "Project \(model.projects.count + 1)")
+        let anchor = canvasVC.freeAnchorNearViewport()
+        let project = model.addProject(name: "Project \(model.projects.count + 1)", anchor: anchor)
         model.selectProject(project)
+        canvasVC.focusProject(project)
     }
 
     @objc func openDocument(_ sender: Any?) {

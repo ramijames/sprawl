@@ -92,4 +92,63 @@ extension NSView {
         }
         return false
     }
+
+    /// The nearest enclosing window panel, if this view is inside one (used to map a click on a
+    /// terminal/document's content back to its item).
+    var enclosingWindowView: WindowView? {
+        var view: NSView? = self
+        while let current = view {
+            if let panel = current as? WindowView { return panel }
+            view = current.superview
+        }
+        return nil
+    }
+
+    /// Scroll the terminal this view belongs to in response to a wheel/trackpad delta (`points`,
+    /// positive = scroll back toward older output). We drive this ourselves because SwiftTerm's
+    /// own `scrollWheel` only reads the legacy line-based `deltaY` (0 for trackpad). The right
+    /// action depends on what the running program wants:
+    ///   - mouse reporting on (e.g. Claude Code) -> send real wheel button events at the cursor;
+    ///   - alternate screen, no mouse reporting (e.g. plain `less`/`vim`) -> arrow keys;
+    ///   - normal screen -> scroll the actual scrollback.
+    /// `accumulator` carries fractional lines across the many small events a trackpad emits.
+    @discardableResult
+    func scrollEnclosingTerminal(points: CGFloat, locationInWindow: NSPoint, accumulator: inout CGFloat) -> Bool {
+        var view: NSView? = self
+        var found: TerminalView?
+        while let current = view {
+            if let term = current as? TerminalView { found = term; break }
+            view = current.superview
+        }
+        guard let term = found else { return false }
+
+        accumulator += points / 16   // ~16 pt per line
+        let lines = Int(accumulator)
+        guard lines != 0 else { return true }   // consumed, but below the 1-line threshold
+        accumulator -= CGFloat(lines)
+
+        let terminal = term.getTerminal()
+        let up = lines > 0
+        let count = min(abs(lines), 6)
+
+        if terminal.mouseMode != .off {
+            let p = term.convert(locationInWindow, from: nil)
+            let cols = terminal.cols, rows = terminal.rows
+            let cw = max(1, term.bounds.width / CGFloat(cols))
+            let ch = max(1, term.bounds.height / CGFloat(rows))
+            let col = min(cols - 1, max(0, Int(p.x / cw)))
+            let row = min(rows - 1, max(0, Int((term.bounds.height - p.y) / ch)))
+            let flags = terminal.encodeButton(button: up ? 4 : 5, release: false, shift: false, meta: false, control: false)
+            for _ in 0..<count { terminal.sendEvent(buttonFlags: flags, x: col, y: row) }
+        } else if terminal.isCurrentBufferAlternate {
+            let seq = up ? (terminal.applicationCursor ? "\u{1b}OA" : "\u{1b}[A")
+                         : (terminal.applicationCursor ? "\u{1b}OB" : "\u{1b}[B")
+            term.send(txt: String(repeating: seq, count: count))
+        } else if up {
+            term.scrollUp(lines: lines)
+        } else {
+            term.scrollDown(lines: -lines)
+        }
+        return true
+    }
 }

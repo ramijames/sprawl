@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 /// The pannable + zoomable surface. `NSScrollView` provides Core Animation-composited
 /// pan and magnification for free; child views (terminals, editors) stay live while scaled.
@@ -37,13 +38,81 @@ final class CanvasScrollView: NSScrollView {
         super.scrollWheel(with: event)
     }
 
-    /// ⌘ + scroll: zoom, centered on the cursor.
+    private var zoomSettleTimer: Timer?
+    private var liveZoom = false
+    private var liveZoomBaseMag: CGFloat = 1
+    private var liveZoomTargetMag: CGFloat = 1
+    private var liveZoomAnchor: NSPoint = .zero   // document coordinates
+
+    /// ⌘ + scroll: zoom centered on the cursor. During the gesture we don't change the scroll
+    /// view's magnification (which would re-render every panel — slow, and what caused the
+    /// flicker). Instead we apply a pure layer scale transform to the canvas, which the GPU
+    /// composites from the already-rendered content (including the WKWebView) without any
+    /// re-rasterization. When zooming settles we commit a single real `setMagnification` at the
+    /// same scale/anchor and drop the transform — visually identical, so there's no flicker.
     func zoom(with event: NSEvent) {
         guard let document = documentView else { return }
+        if !liveZoom { beginLiveZoom(anchor: document.convert(event.locationInWindow, from: nil)) }
         let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY
-        let factor = 1 + (delta * 0.01)
-        let pointInDocument = document.convert(event.locationInWindow, from: nil)
-        setMagnification(clamped(magnification * factor), centeredAt: pointInDocument)
+        updateLiveZoom(factor: 1 + (delta * 0.0025))   // gentle zoom — trackpad deltas are large
+        zoomSettleTimer?.invalidate()
+        zoomSettleTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
+            self?.commitLiveZoom()
+        }
+    }
+
+    /// Pinch-to-zoom: the same live transform, driven by the gesture phases.
+    override func magnify(with event: NSEvent) {
+        guard let document = documentView else { super.magnify(with: event); return }
+        switch event.phase {
+        case .began:
+            beginLiveZoom(anchor: document.convert(event.locationInWindow, from: nil))
+        case .changed:
+            updateLiveZoom(factor: 1 + event.magnification)
+        case .ended, .cancelled:
+            commitLiveZoom()
+        default:
+            break
+        }
+    }
+
+    private func beginLiveZoom(anchor: NSPoint) {
+        liveZoom = true
+        liveZoomBaseMag = magnification
+        liveZoomTargetMag = magnification
+        liveZoomAnchor = anchor
+    }
+
+    private func updateLiveZoom(factor: CGFloat) {
+        guard liveZoom, let layer = documentView?.layer else { return }
+        liveZoomTargetMag = clamped(liveZoomTargetMag * factor)
+        let scale = liveZoomTargetMag / liveZoomBaseMag
+        // Scale about the anchor regardless of the layer's anchorPoint: q' = pivot + L(q - pivot),
+        // so to keep `anchor` fixed we translate by (anchor - pivot)(1 - scale) before scaling.
+        let bounds = layer.bounds.size
+        let pivot = CGPoint(x: layer.anchorPoint.x * bounds.width, y: layer.anchorPoint.y * bounds.height)
+        let dx = (liveZoomAnchor.x - pivot.x) * (1 - scale)
+        let dy = (liveZoomAnchor.y - pivot.y) * (1 - scale)
+        var transform = CATransform3DMakeTranslation(dx, dy, 0)
+        transform = CATransform3DScale(transform, scale, scale, 1)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = transform
+        CATransaction.commit()
+    }
+
+    private func commitLiveZoom() {
+        guard liveZoom, let document = documentView else { return }
+        liveZoom = false
+        zoomSettleTimer?.invalidate()
+        zoomSettleTimer = nil
+        let finalMag = liveZoomTargetMag
+        let anchor = liveZoomAnchor
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        document.layer?.transform = CATransform3DIdentity   // drop the visual transform…
+        setMagnification(finalMag, centeredAt: anchor)       // …and make the same scale real
+        CATransaction.commit()
     }
 
     func zoomIn() { setMagnification(clamped(magnification * 1.25), centeredAt: viewportCenterInDocument()) }

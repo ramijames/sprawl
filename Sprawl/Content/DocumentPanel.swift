@@ -75,6 +75,7 @@ final class DocumentPanel: NSObject {
     private let hostingView: NSHostingView<DocumentEditorView>
     private let container = NSView()
     private let functionsBar = NSView()
+    private let editorClip = NSView()
     private let openButton = NSButton()
     private let saveButton = NSButton()
     private let wrapButton = NSButton()
@@ -138,9 +139,18 @@ final class DocumentPanel: NSObject {
         functionsBar.addSubview(saveButton)
         functionsBar.addSubview(wrapButton)
 
+        // Clip the editor to a rounded-bottom rect so overscrolled content (the gutter + its
+        // background) can't spill past the window's rounded corners when you scroll too far.
+        editorClip.wantsLayer = true
+        editorClip.layer?.masksToBounds = true
+        editorClip.layer?.cornerRadius = 10
+        editorClip.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]   // bottom corners only
+        editorClip.translatesAutoresizingMaskIntoConstraints = false
+
         hostingView.translatesAutoresizingMaskIntoConstraints = false
+        editorClip.addSubview(hostingView)
         container.addSubview(functionsBar)
-        container.addSubview(hostingView)
+        container.addSubview(editorClip)
 
         NSLayoutConstraint.activate([
             functionsBar.topAnchor.constraint(equalTo: container.topAnchor),
@@ -159,10 +169,15 @@ final class DocumentPanel: NSObject {
             wrapButton.centerYAnchor.constraint(equalTo: functionsBar.centerYAnchor),
             wrapButton.widthAnchor.constraint(equalToConstant: 24),
 
-            hostingView.topAnchor.constraint(equalTo: functionsBar.bottomAnchor),
-            hostingView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hostingView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            hostingView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            editorClip.topAnchor.constraint(equalTo: functionsBar.bottomAnchor),
+            editorClip.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            editorClip.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            editorClip.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            hostingView.topAnchor.constraint(equalTo: editorClip.topAnchor),
+            hostingView.leadingAnchor.constraint(equalTo: editorClip.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: editorClip.trailingAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: editorClip.bottomAnchor),
         ])
         updateWrapButton()
     }

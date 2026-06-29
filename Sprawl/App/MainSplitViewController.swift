@@ -97,8 +97,10 @@ final class MainSplitViewController: NSSplitViewController {
         sidebarVC.onSelectItem = { [weak self] item in
             guard let self else { return }
             self.model.selectItem(item)
-            self.canvasVC.focusItem(item)
+            self.canvasVC.fitItemVertically(item)   // center + zoom to fill, like ⌘`
         }
+        sidebarVC.onDeleteItem = { [weak self] item in self?.model.removeItem(item) }
+        sidebarVC.onDeleteProject = { [weak self] project in self?.model.removeProject(project) }
         sidebarVC.onAddItem = { [weak self] kind in self?.model.addItem(kind: kind) }
         sidebarVC.onAddProject = { [weak self] in self?.newProject(nil) }
         sidebarVC.onOpenDocument = { [weak self] in self?.openDocument(nil) }

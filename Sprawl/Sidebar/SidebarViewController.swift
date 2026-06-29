@@ -4,7 +4,7 @@ import AppKit
 /// terminals and documents nested underneath. A "+" button at the bottom adds items/projects.
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
     private let model: AppModel
-    private let outlineView = NSOutlineView()
+    private let outlineView = SidebarOutlineView()
     private let cellIdentifier = NSUserInterfaceItemIdentifier("SidebarCell")
 
     var onSelectProject: ((Project) -> Void)?
@@ -12,6 +12,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     var onAddItem: ((WorkItem.Kind) -> Void)?
     var onAddProject: (() -> Void)?
     var onOpenDocument: (() -> Void)?
+    var onDeleteItem: ((WorkItem) -> Void)?
+    var onDeleteProject: ((Project) -> Void)?
 
     init(model: AppModel) {
         self.model = model
@@ -36,6 +38,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.autoresizesOutlineColumn = true
+        outlineView.onDeleteKey = { [weak self] in self?.deleteSelection() }
 
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -158,6 +161,17 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
+    /// Delete the selected row (a project and its windows, or a single item) — ⌫ on the sidebar.
+    private func deleteSelection() {
+        let row = outlineView.selectedRow
+        guard row >= 0, let item = outlineView.item(atRow: row) else { return }
+        if let project = item as? Project {
+            onDeleteProject?(project)
+        } else if let work = item as? WorkItem {
+            onDeleteItem?(work)
+        }
+    }
+
     private func makeCell() -> NSTableCellView {
         let cell = NSTableCellView()
         cell.identifier = cellIdentifier
@@ -180,6 +194,19 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
+    }
+}
+
+/// Source-list outline view that reports ⌫ / forward-delete so the selected row can be removed.
+final class SidebarOutlineView: NSOutlineView {
+    var onDeleteKey: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 51 || event.keyCode == 117 {   // delete / forward delete
+            onDeleteKey?()
+        } else {
+            super.keyDown(with: event)
+        }
     }
 }
 

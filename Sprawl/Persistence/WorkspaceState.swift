@@ -98,6 +98,40 @@ extension WorkspaceState {
     /// overlap on one shared surface. This pins the current project in place (so the promoted
     /// global viewport still frames it) and lays the rest out in a non-overlapping grid, rigidly
     /// translating each project's windows to preserve its internal relative layout exactly.
+    /// Translate all saved content so its bounding box re-centers on the current canvas. Used after
+    /// the canvas size changed (e.g. the 6000 → 20000 swap) so existing windows don't end up off in
+    /// a corner. Preserves relative layout and the user's view (the viewport shifts with it).
+    mutating func migrateRecenterIfNeeded() {
+        guard (version ?? 0) < 4 else { return }
+        var rects: [CGRect] = []
+        for project in projects {
+            for item in project.items { rects.append(item.frame) }
+            if project.items.isEmpty, let anchor = project.anchor {
+                rects.append(CGRect(origin: anchor, size: SharedCanvasLayout.defaultEmptyContent))
+            }
+        }
+        if let first = rects.first {
+            let bbox = rects.dropFirst().reduce(first) { $0.union($1) }
+            let dx = SharedCanvasLayout.canvasSize.width / 2 - bbox.midX
+            let dy = SharedCanvasLayout.canvasSize.height / 2 - bbox.midY
+            for p in projects.indices {
+                if let anchor = projects[p].anchor {
+                    projects[p].anchor = CGPoint(x: anchor.x + dx, y: anchor.y + dy)
+                }
+                for i in projects[p].items.indices {
+                    projects[p].items[i].frame.origin.x += dx
+                    projects[p].items[i].frame.origin.y += dy
+                }
+            }
+            if let viewport {
+                self.viewport = ViewportState(magnification: viewport.magnification,
+                                              scrollOrigin: CGPoint(x: viewport.scrollOrigin.x + dx,
+                                                                    y: viewport.scrollOrigin.y + dy))
+            }
+        }
+        version = 4
+    }
+
     mutating func migrateToSharedCanvasIfNeeded() {
         guard version == nil else { return }
 

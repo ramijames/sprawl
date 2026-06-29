@@ -183,6 +183,39 @@ final class AppModel {
         projects.first { $0.items.contains { $0 === item } }
     }
 
+    /// Delete a single item — same teardown as closing its window (removes the panel, clears
+    /// selection if it was selected, reloads the sidebar, and autosaves).
+    func removeItem(_ item: WorkItem) {
+        if let window = item.window {
+            window.onClose?(window)
+        } else if let project = project(owning: item) {
+            project.items.removeAll { $0 === item }
+            onModelChange?()
+            onPersistableChange?()
+        }
+    }
+
+    /// Delete a whole project and all of its windows.
+    func removeProject(_ project: Project) {
+        for item in project.items { item.window?.removeFromSuperview() }
+        projects.removeAll { $0 === project }
+        if currentProject === project {
+            currentProject = projects.first
+            onCurrentProjectChange?()
+        }
+        switch selection {
+        case .project(let id) where id == project.id:
+            clearSelection()
+        case .item(let id) where !projects.contains(where: { $0.items.contains { $0.id == id } }):
+            clearSelection()
+        default:
+            break
+        }
+        canvas.needsDisplay = true
+        onModelChange?()
+        onPersistableChange?()
+    }
+
     /// The currently selected item (white-outlined window), if any.
     var selectedItem: WorkItem? {
         guard case .item(let id) = selection else { return nil }
@@ -451,7 +484,7 @@ final class AppModel {
     /// Capture the full workspace as a serializable snapshot.
     func snapshot() -> WorkspaceState {
         var state = WorkspaceState()
-        state.version = 2
+        state.version = 4
         state.currentProjectID = currentProject?.id
         state.viewport = viewport
         state.projects = projects.map { project in

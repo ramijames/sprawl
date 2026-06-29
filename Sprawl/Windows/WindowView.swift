@@ -116,6 +116,9 @@ final class WindowView: NSView {
             y: pad,
             width: max(0, b.width - 2 * pad),
             height: max(0, b.height - header - pad))
+        // Explicit shadow path so Core Animation doesn't recompute the shadow from the layer's
+        // content every composite — the main cause of janky zoom/drag with several panels.
+        layer?.shadowPath = CGPath(roundedRect: b, cornerWidth: 16, cornerHeight: 16, transform: nil)
     }
 
     override var isOpaque: Bool { false }

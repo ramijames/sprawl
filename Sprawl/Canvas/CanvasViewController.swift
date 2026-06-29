@@ -83,6 +83,7 @@ final class CanvasViewController: NSViewController {
     func fitItemVertically(_ item: WorkItem) {
         guard let window = item.window else { return }
         model.canvas.bringToFront(window)
+        item.container?.activeLeaf?.focus()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let clip = self.scrollView.contentView

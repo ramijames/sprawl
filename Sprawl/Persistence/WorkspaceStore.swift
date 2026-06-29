@@ -19,12 +19,18 @@ final class WorkspaceStore {
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
         do {
             var state = try JSONDecoder().decode(WorkspaceState.self, from: data)
+            var migrated = false
             if state.version == nil {
-                // Legacy per-project-canvas layout: migrate to the shared canvas and rewrite the
-                // file as v2 immediately (idempotent, so a crash before the first autosave is safe).
+                // Legacy per-project-canvas layout: migrate to the shared canvas.
                 state.migrateToSharedCanvasIfNeeded()
-                save(state)
+                migrated = true
             }
+            if (state.version ?? 0) < 4 {
+                // Canvas size changed — recenter saved positions onto the current canvas.
+                state.migrateRecenterIfNeeded()
+                migrated = true
+            }
+            if migrated { save(state) }   // rewrite immediately so a crash before autosave is safe
             return state
         } catch {
             // The file exists but is unreadable. Preserve it (rather than let the next autosave

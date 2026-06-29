@@ -123,6 +123,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "New Terminal", action: #selector(MainSplitViewController.newTerminal(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "New Document", action: #selector(MainSplitViewController.newDocument(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "New Browser", action: #selector(MainSplitViewController.newBrowser(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "Open File…", action: #selector(MainSplitViewController.openDocument(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "New Project", action: #selector(MainSplitViewController.newProject(_:)), keyEquivalent: "")

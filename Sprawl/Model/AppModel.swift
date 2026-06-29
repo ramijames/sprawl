@@ -6,10 +6,12 @@ final class WorkItem {
     enum Kind {
         case terminal
         case document
+        case browser
         var symbolName: String {
             switch self {
             case .terminal: return "terminal"
             case .document: return "doc.text"
+            case .browser: return "globe"
             }
         }
     }
@@ -22,6 +24,8 @@ final class WorkItem {
     var terminal: TerminalPanel?
     /// Strong reference so the editor stays alive while the item exists.
     var document: DocumentPanel?
+    /// Strong reference so the web view stays alive while the item exists.
+    var browser: BrowserPanel?
 
     init(name: String, kind: Kind, window: WindowView? = nil) {
         self.name = name
@@ -158,7 +162,12 @@ final class AppModel {
         if kind == .document, let url {
             name = url.lastPathComponent
         } else {
-            let base = kind == .terminal ? "Terminal" : "Document"
+            let base: String
+            switch kind {
+            case .terminal: base = "Terminal"
+            case .document: base = "Document"
+            case .browser: base = "Browser"
+            }
             let count = project.items.filter { $0.kind == kind }.count + 1
             name = "\(base) \(count)"
         }
@@ -166,7 +175,7 @@ final class AppModel {
         if project.isCollapsed { project.isCollapsed = false }   // adding content expands the folder
         let item = installItem(in: project, kind: kind, name: name,
                                frame: spawnFrame(in: project),
-                               documentURL: url, documentText: nil,
+                               contentURL: url, documentText: nil,
                                terminalDirectory: nil, focus: true)
         select(.item(item.id))
         onModelChange?()
@@ -193,7 +202,7 @@ final class AppModel {
                              kind: WorkItem.Kind,
                              name: String,
                              frame: NSRect?,
-                             documentURL: URL?,
+                             contentURL: URL?,
                              documentText: String?,
                              terminalDirectory: String?,
                              focus: Bool) -> WorkItem {
@@ -225,11 +234,20 @@ final class AppModel {
             item.terminal = panel
             if focus { panel.focus() }
         case .document:
-            let panel = DocumentPanel(fileURL: documentURL, initialText: documentText)
+            let panel = DocumentPanel(fileURL: contentURL, initialText: documentText)
             panel.attach(to: window)
             panel.onTextChange = { [weak self] in self?.onPersistableChange?() }
             item.document = panel
             activeDocumentItem = item
+        case .browser:
+            let panel = BrowserPanel(url: contentURL)
+            panel.attach(to: window)
+            panel.onTitleChange = { [weak window] title in
+                guard let window, !title.isEmpty else { return }
+                window.title = title
+            }
+            panel.onURLChange = { [weak self] in self?.onPersistableChange?() }
+            item.browser = panel
         }
 
         project.items.append(item)
@@ -297,13 +315,20 @@ final class AppModel {
                 return order.firstIndex(of: w) ?? Int.max
             }
             let items = project.items.sorted { zIndex($0) < zIndex($1) }.map { item -> ItemState in
-                ItemState(
+                let kindState: ItemState.Kind
+                switch item.kind {
+                case .terminal: kindState = .terminal
+                case .document: kindState = .document
+                case .browser: kindState = .browser
+                }
+                return ItemState(
                     name: item.name,
-                    kind: item.kind == .terminal ? .terminal : .document,
+                    kind: kindState,
                     frame: item.window?.frame ?? .zero,
                     filePath: item.document?.model.fileURL?.path,
                     documentText: item.document?.model.text,
-                    workingDirectory: item.terminal?.currentDirectory)
+                    workingDirectory: item.terminal?.currentDirectory,
+                    browserURL: item.browser?.currentURL)
             }
             // Anchor stays meaningful: content origin for non-empty, the stored anchor otherwise.
             let anchor: CGPoint
@@ -329,12 +354,18 @@ final class AppModel {
             projects.append(project)
 
             for item in ps.items {
-                let url = item.filePath.map { URL(fileURLWithPath: $0) }
+                let kind: WorkItem.Kind
+                let contentURL: URL?
+                switch item.kind {
+                case .terminal: kind = .terminal; contentURL = nil
+                case .document: kind = .document; contentURL = item.filePath.map { URL(fileURLWithPath: $0) }
+                case .browser: kind = .browser; contentURL = item.browserURL.flatMap { URL(string: $0) }
+                }
                 installItem(in: project,
-                            kind: item.kind == .terminal ? .terminal : .document,
+                            kind: kind,
                             name: item.name,
                             frame: item.frame,
-                            documentURL: url,
+                            contentURL: contentURL,
                             documentText: item.documentText,
                             terminalDirectory: item.workingDirectory,
                             focus: false)

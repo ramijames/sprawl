@@ -121,6 +121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Document",
                          action: #selector(MainSplitViewController.newDocument(_:)),
                          keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "New Browser",
+                         action: #selector(MainSplitViewController.newBrowser(_:)),
+                         keyEquivalent: "b")
         fileMenu.addItem(withTitle: "Open File…",
                          action: #selector(MainSplitViewController.openDocument(_:)),
                          keyEquivalent: "o")

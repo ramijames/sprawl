@@ -87,6 +87,7 @@ final class MainSplitViewController: NSSplitViewController {
 
     @objc func newTerminal(_ sender: Any?) { model.addItem(kind: .terminal) }
     @objc func newDocument(_ sender: Any?) { model.addItem(kind: .document) }
+    @objc func newBrowser(_ sender: Any?) { model.addItem(kind: .browser) }
 
     @objc func newProject(_ sender: Any?) {
         let anchor = canvasVC.freeAnchorNearViewport()

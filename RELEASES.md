@@ -6,6 +6,10 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 ## 2026-06-28
 
 ### Added
+- **Browser windows.** A third panel type alongside terminals and documents: a `WKWebView` with
+  an address bar (back/forward + a URL/search field). Create with **New Browser** (⌘B) or the
+  toolbar/sidebar **+** menus; the window title follows the page title, and each browser's last
+  URL persists across relaunch.
 - **Project tabs.** Each tab now has a **collapse** chevron (hides the project's windows and
   shrinks the folder to just its tab) and a **color** dot opening a 4×4 grid of 16 preset colors;
   the chosen color subtly tints the folder fill/stroke. **Drag a project by its tab** to move the

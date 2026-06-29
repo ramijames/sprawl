@@ -90,6 +90,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let menu = NSMenu()
         menu.addItem(withTitle: "New Terminal", action: #selector(menuNewTerminal), keyEquivalent: "")
         menu.addItem(withTitle: "New Document", action: #selector(menuNewDocument), keyEquivalent: "")
+        menu.addItem(withTitle: "New Browser", action: #selector(menuNewBrowser), keyEquivalent: "")
         menu.addItem(withTitle: "Open File…", action: #selector(menuOpenFile), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "New Project", action: #selector(menuNewProject), keyEquivalent: "")
@@ -99,6 +100,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     @objc private func menuNewTerminal() { onAddItem?(.terminal) }
     @objc private func menuNewDocument() { onAddItem?(.document) }
+    @objc private func menuNewBrowser() { onAddItem?(.browser) }
     @objc private func menuOpenFile() { onOpenDocument?() }
     @objc private func menuNewProject() { onAddProject?() }
 

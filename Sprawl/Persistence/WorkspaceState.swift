@@ -51,7 +51,7 @@ struct ProjectState: Codable {
 }
 
 struct ItemState: Codable {
-    enum Kind: String, Codable { case terminal, document }
+    enum Kind: String, Codable { case terminal, document, browser }
 
     var name: String
     var kind: Kind
@@ -65,6 +65,9 @@ struct ItemState: Codable {
 
     // Terminal-only.
     var workingDirectory: String?
+
+    // Browser-only: the last URL, so the browser restores where it was.
+    var browserURL: String?
 }
 
 // MARK: - Migration: per-project canvases (v1) -> one shared canvas (v2)

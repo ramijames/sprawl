@@ -6,7 +6,6 @@ import AppKit
 final class CanvasView: NSView, NSTextFieldDelegate {
     static let canvasSize = SharedCanvasLayout.canvasSize
 
-    private let gridSpacing: CGFloat = 40
     private let framePadding = SharedCanvasLayout.framePadding
     private let tabHeight = SharedCanvasLayout.tabHeight
     private let tabLabelInset: CGFloat = 22
@@ -14,6 +13,14 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     /// Projects to draw are read live from the model.
     weak var model: AppModel?
+
+    /// Current snapping grid in points (0 = off) — read by item panels during move/resize.
+    var snapGrid: CGFloat { model?.snapGrid ?? 0 }
+
+    /// Snap a coordinate to the snapping grid (no-op when snapping is off).
+    static func snap(_ value: CGFloat, to grid: CGFloat) -> CGFloat {
+        grid > 0 ? (value / grid).rounded() * grid : value
+    }
 
     /// The project drawn with a white selection outline (nil => none / an item is selected).
     var selectedProjectID: UUID? {
@@ -32,6 +39,10 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     var onToggleCollapse: ((UUID) -> Void)?
     /// A color was picked from the tab's color dropdown (nil = no color).
     var onSetProjectColor: ((UUID, Int?) -> Void)?
+    /// Right-clicked empty canvas: create a new project near this canvas point.
+    var onCreateProject: ((NSPoint) -> Void)?
+    /// Right-clicked a project's empty folder space: create an item of this kind at this point.
+    var onCreateItem: ((UUID, WorkItem.Kind, NSPoint) -> Void)?
 
     private weak var nameEditor: NSTextField?
     private weak var editingProject: Project?
@@ -61,7 +72,6 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     override func draw(_ dirtyRect: NSRect) {
         Palette.canvas.setFill()
         dirtyRect.fill()
-        drawGrid(in: dirtyRect)
 
         guard let model else { return }
         var selected: Project?
@@ -73,21 +83,6 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         }
         if let selected {   // draw the selected folder last so its outline sits on top
             drawFolder(for: selected, selected: true)
-        }
-    }
-
-    private func drawGrid(in dirtyRect: NSRect) {
-        Palette.gridDot.setFill()
-        let startX = floor(dirtyRect.minX / gridSpacing) * gridSpacing
-        let startY = floor(dirtyRect.minY / gridSpacing) * gridSpacing
-        var y = startY
-        while y <= dirtyRect.maxY {
-            var x = startX
-            while x <= dirtyRect.maxX {
-                NSRect(x: x - 1, y: y - 1, width: 2, height: 2).fill()
-                x += gridSpacing
-            }
-            y += gridSpacing
         }
     }
 
@@ -263,7 +258,10 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     override func mouseDragged(with event: NSEvent) {
         guard let project = draggingProject else { super.mouseDragged(with: event); return }
         let point = convert(event.locationInWindow, from: nil)
-        let dx = point.x - dragStartMouse.x, dy = point.y - dragStartMouse.y
+        // Snap the move offset so the whole project shifts in grid steps (preserving its internal layout).
+        let grid = snapGrid
+        let dx = Self.snap(point.x - dragStartMouse.x, to: grid)
+        let dy = Self.snap(point.y - dragStartMouse.y, to: grid)
         if dragWindowOrigins.isEmpty {
             project.anchor = NSPoint(x: dragStartAnchor.x + dx, y: dragStartAnchor.y + dy)
         } else {
@@ -284,6 +282,57 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     }
 
     private func area(_ r: NSRect) -> CGFloat { r.width * r.height }
+
+    // MARK: - Context menu (right-click on empty canvas / empty folder space)
+    //
+    // A right-click over an item's window panel bubbles up the responder chain to this view (a
+    // panel has no menu of its own), so we explicitly bail out when the point lands on a panel — a
+    // window is not "blank space". Otherwise we split on whether the point is inside a project's
+    // folder: empty folder space offers the item kinds (added to that project, spawned at the
+    // click); empty canvas offers "New Project".
+
+    private var contextMenuPoint: NSPoint = .zero
+    private var contextMenuProjectID: UUID?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let model else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+
+        // A click bubbled up from a window panel isn't blank space — suppress the canvas menu.
+        if subviews.contains(where: { ($0 as? WindowView).map { !$0.isHidden && $0.frame.contains(point) } ?? false }) {
+            return nil
+        }
+        contextMenuPoint = point
+
+        // Same hit rule as a click: front-to-back, preferring the innermost folder on overlap.
+        let hit = model.projects
+            .filter { folderPath(for: $0).contains(point) }
+            .min { area(folderBounds(for: $0)) < area(folderBounds(for: $1)) }
+
+        let menu = NSMenu()
+        if let project = hit {
+            contextMenuProjectID = project.id
+            onSelectProjectFolder?(project.id)   // outline the target folder while the menu is open
+            menu.addItem(withTitle: "New Terminal", action: #selector(contextNewTerminal), keyEquivalent: "")
+            menu.addItem(withTitle: "New Document", action: #selector(contextNewDocument), keyEquivalent: "")
+            menu.addItem(withTitle: "New Browser", action: #selector(contextNewBrowser), keyEquivalent: "")
+        } else {
+            contextMenuProjectID = nil
+            menu.addItem(withTitle: "New Project", action: #selector(contextNewProject), keyEquivalent: "")
+        }
+        menu.items.forEach { $0.target = self }
+        return menu
+    }
+
+    @objc private func contextNewProject() { onCreateProject?(contextMenuPoint) }
+    @objc private func contextNewTerminal() { createContextItem(.terminal) }
+    @objc private func contextNewDocument() { createContextItem(.document) }
+    @objc private func contextNewBrowser() { createContextItem(.browser) }
+
+    private func createContextItem(_ kind: WorkItem.Kind) {
+        guard let id = contextMenuProjectID else { return }
+        onCreateItem?(id, kind, contextMenuPoint)
+    }
 
     // MARK: - Project color dropdown (4×4 grid popover)
 
@@ -501,7 +550,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     /// Add a panel at an explicit frame (the model computes it: project-local spawn for new items,
     /// the saved frame for restored ones). Falls back to the visible center if no frame is given.
     @discardableResult
-    func addWindow(title: String, frame: NSRect? = nil, size: NSSize = NSSize(width: 460, height: 320)) -> WindowView {
+    func addWindow(title: String, frame: NSRect? = nil, size: NSSize = SharedCanvasLayout.defaultPanelSize) -> WindowView {
         let region = visibleRect.isEmpty ? NSRect(origin: .zero, size: Self.canvasSize) : visibleRect
         let fallback = NSRect(x: region.midX - size.width / 2, y: region.midY - size.height / 2,
                               width: size.width, height: size.height)

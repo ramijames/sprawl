@@ -18,16 +18,29 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   interactive at any zoom level.
 - **Window panels** — draggable title bar, edge/corner resize, close, and click-to-raise
   z-ordering.
+- **Tabbed windows** — every window (terminal, document, or browser) holds tabs: ⌘T opens one,
+  ⌘W closes it (closing the last tab closes the window), acting on the selected window. Press
+  **⌘`** to center and zoom the selected window to fill the screen.
+- **Snapping** — a toolbar button (top-right) cycles **Off → 10px → 100px**; with it on, moving or
+  resizing a window (or dragging a project) snaps to that grid.
 - **Live terminals** — each terminal panel runs your login shell (`$SHELL`) with a real PTY
   (via [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)).
 - **Code & text editor** — open, edit, and save files with syntax highlighting and line
   numbers (via [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor)).
+- **Tabbed browser** — each browser panel has tabs (⌘T for a new one), a most-opened-sites
+  favicon grid as its new-tab page, two-finger swipe and ⌘←/⌘→ for back/forward, and address-bar
+  search. Links that open a new window become tabs; sized OAuth/sign-in popups stay separate
+  windows. Open tabs are saved and restored.
 - **Projects on one shared canvas** — every project is a labeled "folder" card that wraps its
   own windows; they're laid out spatially across the same surface, not hidden behind tabs.
   Click a project in the sidebar to pan/zoom straight to it. Double-click a folder's tab to
   rename it.
 - **Selection** — a single white outline shows what's selected: click empty canvas to select
   nothing, a folder to select that project, or a window/terminal to select that item.
+- **Floating dock** — a rounded toolbar pinned to the bottom-center of the canvas (Lucide icons)
+  to create a new project, or a new terminal/document/browser in the focused project.
+- **Right-click** — empty canvas to make a project where you click; empty space inside a folder
+  to add a terminal/document/browser to that project.
 - **Persistent workspace** — close the app and reopen it to find everything exactly where you
   left it (see [Persistence](#persistence)).
 - **Dark, terminal-like UI** — chrome-less window with a unified toolbar, dark vibrancy
@@ -77,13 +90,18 @@ Prefer Xcode? After `xcodegen generate`, open `Sprawl.xcodeproj` and press **⌘
 
 ## Usage
 
-Create terminals, documents, and projects from the toolbar **+** menu, the sidebar **+**
-button, or the keyboard:
+Create terminals, documents, and projects from the **floating dock**, the sidebar **+**
+button, the keyboard, or by **right-clicking the canvas**:
 
 | Action          | Shortcut |
 | --------------- | -------- |
-| New Terminal    | ⌘T       |
-| New Document    | ⌘N       |
+| New Terminal    | ⌘1       |
+| New Document    | ⌘2       |
+| New Browser     | ⌘3       |
+| New Tab (in the selected window) | ⌘T |
+| Close Tab (in the selected window) | ⌘W |
+| Fit selected window to screen | ⌘` |
+| Back / Forward (in a browser) | ⌘← / ⌘→ (or two-finger swipe) |
 | Open File…      | ⌘O       |
 | Save            | ⌘S       |
 | New Project     | ⌘⇧N      |
@@ -92,6 +110,12 @@ button, or the keyboard:
 | Zoom In         | ⌘+       |
 | Zoom Out        | ⌘−       |
 | Actual Size     | ⌘0       |
+
+**Right-click (context menu)**
+
+- Right-click **empty canvas** to create a **new project** right where you clicked.
+- Right-click **empty space inside a project's folder** to add a **new terminal, document, or
+  browser** to that project — its window spawns at the click.
 
 **Selecting & renaming**
 
@@ -102,11 +126,12 @@ button, or the keyboard:
 
 **Canvas navigation**
 
-- **Pan:** two-finger scroll / trackpad drag over empty canvas.
-- **Zoom:** pinch, or **⌘ + scroll** (zooms toward the cursor), or the toolbar zoom control.
-- Scrolling over a **terminal** scrolls *that terminal* — its scrollback, or the running
-  full-screen app (e.g. `less`, `vim`, a TUI) via wheel/arrow events. **Hold ⌥** while scrolling
-  over a terminal to pan the canvas instead.
+- **Pan:** **hold ⌥** and two-finger scroll (anywhere). Plain scroll over empty canvas does
+  nothing — moving the canvas always requires ⌥.
+- **Zoom:** pinch, **⌘ + scroll** (zooms toward the cursor), or the View menu (⌘+ / ⌘− / ⌘0).
+- Plain scroll over a **terminal**, **browser**, or **editor** scrolls *that* content (a
+  terminal's scrollback, or a running full-screen app like `less`/`vim` via wheel/arrow
+  events). Hold ⌥ to pan the canvas instead.
 
 ---
 

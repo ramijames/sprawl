@@ -3,6 +3,7 @@ import AppKit
 final class MainWindowController: NSWindowController, NSToolbarDelegate {
     private let model: AppModel
     private var splitViewController: MainSplitViewController!
+    private weak var snapButton: NSButton?
 
     init(model: AppModel) {
         self.model = model
@@ -27,6 +28,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         splitViewController.captureViewport()
     }
 
+    /// Zoom the selected window to fit the viewport height ("~").
+    func fitSelectedWindow() {
+        splitViewController.fitSelectedItem()
+    }
+
     /// Apply a saved window frame on launch (call before the window is shown). A frame that no
     /// longer intersects any screen (e.g. a disconnected external display) is ignored so the
     /// window can't be stranded off-screen — the centered default from `configure` stands.
@@ -43,7 +49,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
     private func configure(_ window: NSWindow) {
         window.title = "Sprawl"
         window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
+        // Let the unified toolbar render its system material (Liquid Glass on macOS 26) instead of
+        // being fully transparent — gives the top bar a frosted-glass look over the canvas.
+        window.titlebarAppearsTransparent = false
         window.appearance = NSAppearance(named: .darkAqua)
         window.center()   // first-launch default; a saved frame is applied via restoreWindowFrame.
 
@@ -69,70 +77,55 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .zoomControls, .addEntry]
+        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .snapToggle]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .space, .zoomControls, .addEntry]
+        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .space, .snapToggle]
     }
 
     func toolbar(_ toolbar: NSToolbar,
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        switch itemIdentifier {
-        case .zoomControls: return makeZoomItem()
-        case .addEntry: return makeAddItem()
-        default: return nil
-        }
+        // Creation lives in the dock / right-click / ⌘1-4 and zoom in the View menu / ⌘-scroll;
+        // only the snapping toggle remains as a toolbar control (right side).
+        itemIdentifier == .snapToggle ? makeSnapItem() : nil
     }
 
-    private func makeZoomItem() -> NSToolbarItem {
-        let segmented = NSSegmentedControl(
-            labels: ["\u{2212}", "1:1", "+"],
-            trackingMode: .momentary,
-            target: self,
-            action: #selector(zoomSegment(_:)))
-        segmented.segmentStyle = .texturedRounded
-        let item = NSToolbarItem(itemIdentifier: .zoomControls)
-        item.view = segmented
-        item.label = "Zoom"
-        return item
-    }
-
-    private func makeAddItem() -> NSToolbarItem {
-        let image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add")
-        let button = NSButton(title: "", image: image ?? NSImage(), target: self, action: #selector(showAddMenu(_:)))
+    private func makeSnapItem() -> NSToolbarItem {
+        let button = NSButton(title: "", image: NSImage(), target: self, action: #selector(cycleSnap(_:)))
         button.bezelStyle = .texturedRounded
         button.imagePosition = .imageOnly
-        let item = NSToolbarItem(itemIdentifier: .addEntry)
+        snapButton = button
+        let item = NSToolbarItem(itemIdentifier: .snapToggle)
         item.view = button
-        item.label = "Add"
+        item.label = "Snapping"
+        updateSnapButton()
         return item
     }
 
-    @objc private func zoomSegment(_ sender: NSSegmentedControl) {
-        switch sender.selectedSegment {
-        case 0: splitViewController.zoomOut(nil)
-        case 1: splitViewController.zoomReset(nil)
-        case 2: splitViewController.zoomIn(nil)
-        default: break
+    @objc private func cycleSnap(_ sender: NSButton) {
+        switch model.snapGrid {
+        case 0: model.snapGrid = 10
+        case 10: model.snapGrid = 100
+        default: model.snapGrid = 0
         }
+        updateSnapButton()
     }
 
-    @objc private func showAddMenu(_ sender: NSButton) {
-        let menu = NSMenu()
-        menu.addItem(withTitle: "New Terminal", action: #selector(MainSplitViewController.newTerminal(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "New Document", action: #selector(MainSplitViewController.newDocument(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "New Browser", action: #selector(MainSplitViewController.newBrowser(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "Open File…", action: #selector(MainSplitViewController.openDocument(_:)), keyEquivalent: "")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "New Project", action: #selector(MainSplitViewController.newProject(_:)), keyEquivalent: "")
-        menu.items.forEach { $0.target = splitViewController }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    private func updateSnapButton() {
+        let symbol: String, tip: String
+        switch model.snapGrid {
+        case 10: symbol = "square.grid.3x3"; tip = "Snapping: 10 px grid"
+        case 100: symbol = "square.grid.2x2"; tip = "Snapping: 100 px grid"
+        default: symbol = "square.dashed"; tip = "Snapping: Off"
+        }
+        snapButton?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
+        snapButton?.toolTip = tip
+        snapButton?.contentTintColor = model.snapGrid > 0 ? .controlAccentColor : nil
     }
 }
 
 private extension NSToolbarItem.Identifier {
-    static let zoomControls = NSToolbarItem.Identifier("zoomControls")
-    static let addEntry = NSToolbarItem.Identifier("addEntry")
+    static let snapToggle = NSToolbarItem.Identifier("snapToggle")
 }

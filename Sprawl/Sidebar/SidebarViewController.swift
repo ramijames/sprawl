@@ -41,6 +41,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
         scrollView.documentView = outlineView
 
         let bottomBar = NSView()

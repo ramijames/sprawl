@@ -58,7 +58,48 @@ final class CanvasViewController: NSViewController {
         guard let window = item.window else { return }
         model.canvas.bringToFront(window)
         window.scrollToVisible(window.bounds)
-        item.terminal?.focus()
+        item.container?.activeLeaf?.focus()
+    }
+
+    /// Pan (keeping the current zoom) so the item's window is centered in the viewport — used when
+    /// creating an item from the dock so the canvas moves to where the new window appears.
+    func centerOnItem(_ item: WorkItem) {
+        guard let window = item.window else { return }
+        model.canvas.bringToFront(window)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let clip = self.scrollView.contentView
+            let frame = window.frame
+            clip.scroll(to: NSPoint(x: frame.midX - clip.bounds.width / 2,
+                                    y: frame.midY - clip.bounds.height / 2))
+            self.scrollView.reflectScrolledClipView(clip)
+            self.onViewportChange?()
+        }
+        item.container?.activeLeaf?.focus()
+    }
+
+    /// Center the item's window and zoom so it fills the viewport height, leaving room for the
+    /// toolbar at top and the floating dock at the bottom ("~" fit-to-window).
+    func fitItemVertically(_ item: WorkItem) {
+        guard let window = item.window else { return }
+        model.canvas.bringToFront(window)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let clip = self.scrollView.contentView
+            let screenHeight = clip.frame.height          // on-screen viewport height (unscaled)
+            let topInset: CGFloat = 56                      // unified toolbar
+            let bottomInset: CGFloat = 96                   // floating dock + breathing room
+            let frame = window.frame
+            guard frame.height > 0, screenHeight > 0 else { return }
+            let available = max(80, screenHeight - topInset - bottomInset)
+            let fit = available / frame.height
+            let mag = max(self.scrollView.minMagnification, min(self.scrollView.maxMagnification, fit))
+            self.scrollView.magnification = mag           // clip.bounds now reflects the new zoom
+            let originY = frame.midY - clip.bounds.height / 2 - (topInset - bottomInset) / (2 * mag)
+            clip.scroll(to: NSPoint(x: frame.midX - clip.bounds.width / 2, y: originY))
+            self.scrollView.reflectScrolledClipView(clip)
+            self.onViewportChange?()
+        }
     }
 
     /// Pan/zoom so the project's folder is framed in the viewport.
@@ -80,6 +121,17 @@ final class CanvasViewController: NSViewController {
     }
 
     func freeAnchorNearViewport() -> NSPoint { model.canvas.freeAnchorNearViewport() }
+
+    /// Float a fixed overlay (e.g. the dock) over the canvas, pinned bottom-center. It sits above
+    /// the scroll view, so it stays put while the canvas pans/zooms.
+    func addBottomOverlay(_ overlay: NSView, bottomInset: CGFloat = 24) {
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -bottomInset),
+        ])
+    }
 
     // MARK: - Viewport change observation (drives autosave)
 

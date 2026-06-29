@@ -27,12 +27,19 @@ final class CanvasScrollView: NSScrollView {
         backgroundColor = Palette.canvas
     }
 
-    // ⌘ + scroll wheel zooms, centered on the cursor.
-    override func scrollWheel(with event: NSEvent) {
-        guard event.modifierFlags.contains(.command), let document = documentView else {
-            super.scrollWheel(with: event)
-            return
-        }
+    // Plain scroll over the canvas does nothing — moving the canvas requires ⌥. The app's scroll
+    // monitor routes ⌥+scroll to `pan` and ⌘+scroll to `zoom` (deciding from the gesture's initial
+    // modifiers), so this view never pans on a bare scroll.
+    override func scrollWheel(with event: NSEvent) {}
+
+    /// ⌥ + scroll: pan the canvas.
+    func pan(with event: NSEvent) {
+        super.scrollWheel(with: event)
+    }
+
+    /// ⌘ + scroll: zoom, centered on the cursor.
+    func zoom(with event: NSEvent) {
+        guard let document = documentView else { return }
         let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY
         let factor = 1 + (delta * 0.01)
         let pointInDocument = document.convert(event.locationInWindow, from: nil)

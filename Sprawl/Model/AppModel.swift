@@ -20,12 +20,15 @@ final class WorkItem {
     var name: String
     let kind: Kind
     weak var window: WindowView?
-    /// Strong reference so the live terminal stays alive while the item exists.
-    var terminal: TerminalPanel?
-    /// Strong reference so the editor stays alive while the item exists.
-    var document: DocumentPanel?
+    /// Terminal & document items host a tabbed container (one or more terminal/document tabs).
+    var container: TabbedContainer?
     /// Strong reference so the web view stays alive while the item exists.
     var browser: BrowserPanel?
+
+    /// The active document tab's panel (Save targets this), if this is a document item.
+    var activeDocumentLeaf: DocumentLeaf? { container?.activeLeaf as? DocumentLeaf }
+    /// Whatever supports ⌘T / ⌘W for this item.
+    var tabbable: Tabbable? { browser ?? container }
 
     init(name: String, kind: Kind, window: WindowView? = nil) {
         self.name = name
@@ -66,6 +69,15 @@ final class Project {
 final class AppModel {
     /// The single canvas hosting every project's windows.
     let canvas = CanvasView(frame: .zero)
+    /// Shared tally of opened sites, driving every browser's most-opened start-page grid.
+    let topSites = TopSitesStore()
+
+    /// Canvas snapping grid in points (0 = off, else 10 or 100). Applied when an item is moved or
+    /// resized, or a project is dragged. Persisted across launches.
+    var snapGrid: CGFloat {
+        get { CGFloat(UserDefaults.standard.double(forKey: "SprawlSnapGrid")) }
+        set { UserDefaults.standard.set(Double(newValue), forKey: "SprawlSnapGrid") }
+    }
 
     private(set) var projects: [Project] = []
     private(set) var currentProject: Project?
@@ -116,6 +128,30 @@ final class AppModel {
             self.canvas.needsDisplay = true
             self.onPersistableChange?()
         }
+        canvas.onCreateProject = { [weak self] point in
+            guard let self else { return }
+            let project = self.addProject(name: "Project \(self.projects.count + 1)",
+                                          anchor: self.projectAnchor(centeredAt: point))
+            self.selectProject(project)
+        }
+        canvas.onCreateItem = { [weak self] id, kind, point in
+            guard let self, let project = self.projects.first(where: { $0.id == id }) else { return }
+            self.addItem(kind: kind, in: project, at: point)
+        }
+    }
+
+    /// Top-left content anchor that roughly centers a new (empty) project's folder on a canvas point.
+    private func projectAnchor(centeredAt point: NSPoint) -> NSPoint {
+        let size = SharedCanvasLayout.defaultEmptyContent
+        return clampedOrigin(NSPoint(x: point.x - size.width / 2, y: point.y - size.height / 2), size: size)
+    }
+
+    /// Keep a `size`-sized box fully inside the canvas, so a click near an edge can't place a panel
+    /// (or folder) at a negative origin where its header would be scrolled out of reach.
+    private func clampedOrigin(_ origin: NSPoint, size: CGSize) -> NSPoint {
+        let maxX = max(0, SharedCanvasLayout.canvasSize.width - size.width)
+        let maxY = max(0, SharedCanvasLayout.canvasSize.height - size.height)
+        return NSPoint(x: min(max(0, origin.x), maxX), y: min(max(0, origin.y), maxY))
     }
 
     func toggleCollapse(_ project: Project) {
@@ -147,6 +183,19 @@ final class AppModel {
         projects.first { $0.items.contains { $0 === item } }
     }
 
+    /// The currently selected item (white-outlined window), if any.
+    var selectedItem: WorkItem? {
+        guard case .item(let id) = selection else { return nil }
+        for project in projects {
+            if let item = project.items.first(where: { $0.id == id }) { return item }
+        }
+        return nil
+    }
+
+    /// The selected window's tab controller (browser or terminal/document container) — drives
+    /// ⌘T/⌘W off the selection (the white-outlined window) rather than off keyboard focus.
+    var selectedTabbable: Tabbable? { selectedItem?.tabbable }
+
     func item(for window: WindowView) -> WorkItem? {
         for project in projects {
             if let item = project.items.first(where: { $0.window === window }) { return item }
@@ -157,7 +206,14 @@ final class AppModel {
     @discardableResult
     func addItem(kind: WorkItem.Kind, url: URL? = nil) -> WorkItem? {
         guard let project = currentProject else { return nil }
+        return addItem(kind: kind, in: project, url: url)
+    }
 
+    /// Add an item to a specific project, optionally spawning its window centered on an explicit
+    /// canvas point (used by the right-click "new item" menu); otherwise it cascades near the
+    /// project's existing windows. Makes that project current and selects the new item.
+    @discardableResult
+    func addItem(kind: WorkItem.Kind, in project: Project, at point: NSPoint? = nil, url: URL? = nil) -> WorkItem {
         let name: String
         if kind == .document, let url {
             name = url.lastPathComponent
@@ -172,11 +228,28 @@ final class AppModel {
             name = "\(base) \(count)"
         }
 
-        if project.isCollapsed { project.isCollapsed = false }   // adding content expands the folder
+        let wasCollapsed = project.isCollapsed
+        if wasCollapsed {               // adding content expands the folder (and unhides its windows)
+            project.isCollapsed = false
+            applyCollapse(project)
+        }
+
+        // Honor an explicit click point only for an already-expanded project (where the empty-folder
+        // spot is meaningful); a just-revealed collapsed project cascades off its existing windows.
+        let size = SharedCanvasLayout.defaultPanelSize
+        let frame: NSRect
+        if let point, !wasCollapsed {
+            let origin = clampedOrigin(NSPoint(x: point.x - size.width / 2, y: point.y - size.height / 2), size: size)
+            frame = NSRect(origin: origin, size: size)
+        } else {
+            frame = spawnFrame(in: project)
+        }
+
         let item = installItem(in: project, kind: kind, name: name,
-                               frame: spawnFrame(in: project),
+                               frame: frame,
                                contentURL: url, documentText: nil,
                                terminalDirectory: nil, focus: true)
+        setCurrentProject(project)
         select(.item(item.id))
         onModelChange?()
         onPersistableChange?()
@@ -200,7 +273,7 @@ final class AppModel {
 
     /// Where a new window for a project spawns: cascaded near its existing windows, or at its
     /// anchor when empty, so it joins the project's folder instead of the viewport center.
-    private func spawnFrame(in project: Project, size: NSSize = NSSize(width: 460, height: 320)) -> NSRect {
+    private func spawnFrame(in project: Project, size: NSSize = SharedCanvasLayout.defaultPanelSize) -> NSRect {
         let frames = project.items.compactMap { $0.window?.frame }
         guard let first = frames.first else {
             return NSRect(origin: project.anchor, size: size)
@@ -208,6 +281,23 @@ final class AppModel {
         let union = frames.dropFirst().reduce(first) { $0.union($1) }
         let step = CGFloat((project.items.count % 6) * 28)
         return NSRect(x: union.minX + step, y: union.minY + step, width: size.width, height: size.height)
+    }
+
+    /// Wire a tabbed terminal/document container's callbacks to the window and model.
+    private func wireContainer(_ container: TabbedContainer, window: WindowView) {
+        container.onActiveTitleChange = { [weak window] title in
+            guard let window, !title.isEmpty else { return }
+            window.title = title
+        }
+        container.onRequestClose = { [weak window] in
+            guard let window else { return }
+            window.onClose?(window)
+        }
+        container.onStructureChange = { [weak self] in
+            self?.onModelChange?()
+            self?.onPersistableChange?()
+        }
+        container.onContentChange = { [weak self] in self?.onPersistableChange?() }
     }
 
     /// Builds a panel (terminal or document) on the shared canvas and wires it up. Shared by
@@ -221,7 +311,11 @@ final class AppModel {
                              documentText: String?,
                              terminalDirectory: String?,
                              focus: Bool,
-                             browserPanel: BrowserPanel? = nil) -> WorkItem {
+                             browserPanel: BrowserPanel? = nil,
+                             browserTabs: [String]? = nil,
+                             browserActiveTab: Int = 0,
+                             tabStates: [TabState]? = nil,
+                             tabActive: Int = 0) -> WorkItem {
         let window = canvas.addWindow(title: name, frame: frame)
         let item = WorkItem(name: name, kind: kind, window: window)
         window.onClose = { [weak self, weak project, weak item] closedWindow in
@@ -236,27 +330,40 @@ final class AppModel {
 
         switch kind {
         case .terminal:
-            let panel = TerminalPanel(startDirectory: terminalDirectory)
-            panel.attach(to: window)
-            panel.onTitleChange = { [weak window] title in
-                guard let window, !title.isEmpty else { return }
-                window.title = title
+            let container = TabbedContainer()
+            wireContainer(container, window: window)
+            container.makeLeaf = { TerminalLeaf(startDirectory: nil, name: "Terminal") }
+            let states = tabStates ?? [TabState(name: name, workingDirectory: terminalDirectory)]
+            for state in states {
+                container.addLeaf(TerminalLeaf(startDirectory: state.workingDirectory,
+                                               name: state.name ?? "Terminal"), select: false)
             }
-            panel.onProcessTerminated = { [weak window] in
-                guard let window else { return }
-                window.onClose?(window)
-            }
-            panel.onDirectoryChange = { [weak self] in self?.onPersistableChange?() }
-            item.terminal = panel
-            if focus { panel.focus() }
+            container.attach(to: window)
+            container.selectTab(at: tabActive, focus: focus)
+            item.container = container
         case .document:
-            let panel = DocumentPanel(fileURL: contentURL, initialText: documentText)
-            panel.attach(to: window)
-            panel.onTextChange = { [weak self] in self?.onPersistableChange?() }
-            item.document = panel
+            let container = TabbedContainer()
+            wireContainer(container, window: window)
+            container.makeLeaf = { DocumentLeaf(fileURL: nil, initialText: nil, name: "Document") }
+            let states = tabStates ?? [TabState(name: name, filePath: contentURL?.path, documentText: documentText)]
+            for state in states {
+                let url = state.filePath.map { URL(fileURLWithPath: $0) }
+                container.addLeaf(DocumentLeaf(fileURL: url, initialText: state.documentText,
+                                               name: state.name ?? "Document"), select: false)
+            }
+            container.attach(to: window)
+            container.selectTab(at: tabActive, focus: focus)
+            item.container = container
             activeDocumentItem = item
         case .browser:
-            let panel = browserPanel ?? BrowserPanel(url: contentURL)
+            let panel: BrowserPanel
+            if let browserPanel {
+                panel = browserPanel
+            } else if let browserTabs, !browserTabs.isEmpty {
+                panel = BrowserPanel(topSites: topSites, tabURLs: browserTabs, activeIndex: browserActiveTab)
+            } else {
+                panel = BrowserPanel(topSites: topSites, url: contentURL)
+            }
             panel.attach(to: window)
             panel.onTitleChange = { [weak window] title in
                 guard let window, !title.isEmpty else { return }
@@ -326,6 +433,21 @@ final class AppModel {
 
     // MARK: - Persistence
 
+    /// Serialize a terminal/document item's tabs (nil for browsers, which use `browserTabs`).
+    private func tabStates(for item: WorkItem) -> [TabState]? {
+        guard let container = item.container else { return nil }
+        return container.leaves.map { leaf in
+            if let terminal = leaf as? TerminalLeaf {
+                return TabState(name: terminal.title, workingDirectory: terminal.panel.currentDirectory)
+            } else if let document = leaf as? DocumentLeaf {
+                return TabState(name: document.title,
+                                filePath: document.panel.model.fileURL?.path,
+                                documentText: document.panel.model.text)
+            }
+            return TabState()
+        }
+    }
+
     /// Capture the full workspace as a serializable snapshot.
     func snapshot() -> WorkspaceState {
         var state = WorkspaceState()
@@ -349,10 +471,11 @@ final class AppModel {
                     name: item.name,
                     kind: kindState,
                     frame: item.window?.frame ?? .zero,
-                    filePath: item.document?.model.fileURL?.path,
-                    documentText: item.document?.model.text,
-                    workingDirectory: item.terminal?.currentDirectory,
-                    browserURL: item.browser?.currentURL)
+                    tabs: tabStates(for: item),
+                    activeTab: item.container?.activeIndex,
+                    browserURL: item.browser?.currentURL,
+                    browserTabs: item.browser?.tabURLs,
+                    browserActiveTab: item.browser?.activeTabIndex)
             }
             // Anchor stays meaningful: content origin for non-empty, the stored anchor otherwise.
             let anchor: CGPoint
@@ -380,10 +503,15 @@ final class AppModel {
             for item in ps.items {
                 let kind: WorkItem.Kind
                 let contentURL: URL?
+                var browserTabs: [String]?
                 switch item.kind {
                 case .terminal: kind = .terminal; contentURL = nil
                 case .document: kind = .document; contentURL = item.filePath.map { URL(fileURLWithPath: $0) }
-                case .browser: kind = .browser; contentURL = item.browserURL.flatMap { URL(string: $0) }
+                case .files: continue   // the Files app was removed; drop any saved files windows
+                case .browser:
+                    kind = .browser; contentURL = nil
+                    // Prefer the full tab list; fall back to the legacy single URL.
+                    browserTabs = item.browserTabs ?? item.browserURL.map { [$0] }
                 }
                 installItem(in: project,
                             kind: kind,
@@ -392,7 +520,11 @@ final class AppModel {
                             contentURL: contentURL,
                             documentText: item.documentText,
                             terminalDirectory: item.workingDirectory,
-                            focus: false)
+                            focus: false,
+                            browserTabs: browserTabs,
+                            browserActiveTab: item.browserActiveTab ?? 0,
+                            tabStates: item.tabs,   // nil for legacy saves → one tab from the flat fields
+                            tabActive: item.activeTab ?? 0)
             }
             applyCollapse(project)   // hide windows if the project was collapsed
         }

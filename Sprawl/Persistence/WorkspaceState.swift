@@ -9,6 +9,8 @@ enum SharedCanvasLayout {
     static let framePadding: CGFloat = 80
     static let tabHeight: CGFloat = 44
     static let defaultEmptyContent = CGSize(width: 900, height: 600)
+    /// Default size for a newly spawned window panel.
+    static let defaultPanelSize = CGSize(width: 460, height: 320)
 }
 
 /// Global canvas viewport (zoom + scroll), now that all projects share one surface.
@@ -50,24 +52,42 @@ struct ProjectState: Codable {
     var hasViewport: Bool?
 }
 
+/// One tab inside a terminal/document window (browsers persist via `browserTabs` instead).
+struct TabState: Codable {
+    var name: String?
+    var filePath: String?
+    var documentText: String?
+    var workingDirectory: String?
+}
+
 struct ItemState: Codable {
-    enum Kind: String, Codable { case terminal, document, browser }
+    enum Kind: String, Codable { case terminal, document, browser, files }
 
     var name: String
     var kind: Kind
     /// Panel frame in absolute shared-canvas coordinates (position + size).
     var frame: CGRect
 
-    // Document-only.
+    /// Tabs for a terminal/document window, in order, with the active one at `activeTab`.
+    /// When absent (older saves), the single `filePath`/`documentText`/`workingDirectory` below
+    /// describe one tab.
+    var tabs: [TabState]?
+    var activeTab: Int?
+
+    // Document-only (legacy single-tab fields; superseded by `tabs`).
     var filePath: String?
     /// Exact editor text at snapshot time — restores unsaved edits, not just the on-disk file.
     var documentText: String?
 
-    // Terminal-only.
+    // Terminal-only (legacy single-tab field; superseded by `tabs`).
     var workingDirectory: String?
 
-    // Browser-only: the last URL, so the browser restores where it was.
+    // Browser-only: the last URL, so the browser restores where it was. `browserTabs` holds every
+    // tab's URL in order (start-page tabs serialize as a sentinel) and supersedes `browserURL` when
+    // present; `browserURL` is still written for back-compat with older builds.
     var browserURL: String?
+    var browserTabs: [String]?
+    var browserActiveTab: Int?
 }
 
 // MARK: - Migration: per-project canvases (v1) -> one shared canvas (v2)

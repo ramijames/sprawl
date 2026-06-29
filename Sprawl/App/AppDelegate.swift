@@ -1,4 +1,17 @@
 import AppKit
+import ObjectiveC
+
+extension NSScroller {
+    /// Force thin, auto-hiding overlay scrollers app-wide — even when the user's system setting is
+    /// "Show scroll bars: Always", which otherwise gives every scroll view (including the editor,
+    /// terminal, and web views we don't own) thick legacy scrollbars. Done by overriding the
+    /// class getter `preferredScrollerStyle` so scroll views created afterward pick up overlay.
+    static func forceOverlayStyleAppWide() {
+        guard let method = class_getClassMethod(NSScroller.self, NSSelectorFromString("preferredScrollerStyle")) else { return }
+        let block: @convention(block) (AnyObject) -> NSScroller.Style = { _ in .overlay }
+        method_setImplementation(method, imp_implementationWithBlock(block))
+    }
+}
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = AppModel()
@@ -6,11 +19,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
     private var scrollMonitor: Any?
     private var clickMonitor: Any?
+    private var keyMonitor: Any?
+    /// ⌘/⌥ flags captured at the start of a trackpad scroll gesture, so a modifier pressed
+    /// mid-scroll can't turn an in-progress plain scroll into a zoom/pan.
+    private var scrollGestureModifiers: NSEvent.ModifierFlags = []
     private var pendingSave: DispatchWorkItem?
     /// Carries fractional scroll lines across the many small events a trackpad emits.
     private var terminalScrollAccumulator: CGFloat = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSScroller.forceOverlayStyleAppWide()   // thin scrollers everywhere, before any are created
         setupMenu()
 
         // Restore the saved workspace before the UI is built, so MainSplitViewController sees a
@@ -62,18 +80,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   let hit = contentView.hitTest(event.locationInWindow) else {
                 return event
             }
-            // Modifiers take over canvas navigation no matter what's under the cursor (terminal,
-            // browser, editor): ⌘ zooms, ⌥ pans — the item never scrolls while a modifier is held.
-            if let canvas = hit.enclosingCanvasScrollView,
-               event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option) {
-                canvas.scrollWheel(with: event)
+            // Lock the ⌘/⌥ decision at the START of a trackpad gesture so a modifier pressed
+            // mid-scroll can't flip an in-progress plain scroll into a zoom/pan. Mouse wheels
+            // (no phase) use the live modifiers.
+            if event.phase.contains(.began) { self.scrollGestureModifiers = event.modifierFlags }
+            let isGesture = event.phase != [] || event.momentumPhase != []
+            let modifiers = isGesture ? self.scrollGestureModifiers : event.modifierFlags
+
+            // ⌘ zooms / ⌥ pans the canvas, no matter what's under the cursor.
+            if let canvas = hit.enclosingCanvasScrollView {
+                if modifiers.contains(.command) { canvas.zoom(with: event); return nil }
+                if modifiers.contains(.option) { canvas.pan(with: event); return nil }
+            }
+            // Plain scroll over a terminal scrolls its buffer.
+            if hit.isInsideTerminal {
+                let points = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY * 16
+                hit.scrollEnclosingTerminal(points: points, locationInWindow: event.locationInWindow,
+                                            accumulator: &self.terminalScrollAccumulator)
                 return nil
             }
-            guard hit.isInsideTerminal else { return event }   // plain scroll over a terminal -> buffer
-            let points = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY * 16
-            hit.scrollEnclosingTerminal(points: points, locationInWindow: event.locationInWindow,
-                                        accumulator: &self.terminalScrollAccumulator)
-            return nil
+            // Otherwise let the content under the cursor scroll itself (browser page, editor, file
+            // list). Over empty canvas this reaches CanvasScrollView, which ignores plain scroll —
+            // moving the canvas requires ⌥.
+            return event
         }
 
         // Clicking anywhere inside a panel selects that item — including terminal/document CONTENT,
@@ -88,6 +117,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return event
             }
             self.model.selectItem(item)
+            return event
+        }
+
+        // ⌘T / ⌘W act on the SELECTED browser window, regardless of keyboard focus. This monitor
+        // runs before the menu/responder chain (and before WKWebView can swallow the keys), so the
+        // shortcuts work whenever a browser window is selected — not only after clicking the page.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // These act on the SELECTED window regardless of keyboard focus, so they run before the
+            // menu/responder chain (and before a terminal/WebKit can swallow them).
+            guard let self,
+                  event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
+                  let key = event.charactersIgnoringModifiers else {
+                return event
+            }
+            // ⌘T / ⌘W — new/close tab on the selected window (browser, terminal, document, files).
+            if key == "t" || key == "w", let tabbable = self.model.selectedTabbable {
+                if !event.isARepeat {
+                    if key == "t" { tabbable.openNewTab() } else { tabbable.closeCurrentTab() }
+                }
+                return nil
+            }
             return event
         }
     }
@@ -114,13 +164,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "New Terminal",
                          action: #selector(MainSplitViewController.newTerminal(_:)),
-                         keyEquivalent: "t")
+                         keyEquivalent: "1")
         fileMenu.addItem(withTitle: "New Document",
                          action: #selector(MainSplitViewController.newDocument(_:)),
-                         keyEquivalent: "n")
+                         keyEquivalent: "2")
         fileMenu.addItem(withTitle: "New Browser",
                          action: #selector(MainSplitViewController.newBrowser(_:)),
-                         keyEquivalent: "b")
+                         keyEquivalent: "3")
+        // ⌘T opens a tab in the focused browser; auto-disabled when no browser is focused (the
+        // action is only implemented by NavigatingWebView).
+        fileMenu.addItem(withTitle: "New Tab",
+                         action: #selector(NavigatingWebView.newBrowserTab(_:)),
+                         keyEquivalent: "t")
+        // ⌘W closes the focused browser's active tab (closing the last tab closes the panel);
+        // auto-disabled when no browser is focused.
+        fileMenu.addItem(withTitle: "Close Tab",
+                         action: #selector(NavigatingWebView.closeBrowserTab(_:)),
+                         keyEquivalent: "w")
         fileMenu.addItem(withTitle: "Open File…",
                          action: #selector(MainSplitViewController.openDocument(_:)),
                          keyEquivalent: "o")
@@ -160,6 +220,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(withTitle: "Actual Size",
                          action: #selector(MainSplitViewController.zoomReset(_:)),
                          keyEquivalent: "0")
+        viewMenu.addItem(.separator())
+        // ⌘` as a menu key equivalent reliably claims the shortcut (a bare local monitor loses it
+        // to macOS's built-in "cycle windows"). Routed through the responder chain to the split VC.
+        viewMenu.addItem(withTitle: "Fit Window to Screen",
+                         action: #selector(MainSplitViewController.fitWindowToScreen(_:)),
+                         keyEquivalent: "`")
         viewMenuItem.submenu = viewMenu
 
         NSApp.mainMenu = mainMenu

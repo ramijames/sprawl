@@ -15,7 +15,17 @@ enum Palette {
     static let panelBorder        = srgb(0x38, 0x38, 0x38)   // window border (default)
     static let panelBorderSelected = srgb(0x5B, 0x59, 0x59)  // window border (selected)
     static let panelTitleBar      = srgb(0x38, 0x36, 0x4A)   // (unused since the title-bar band was removed)
-    static let panelTitleText     = srgb(0xE0, 0xDF, 0xEA)
+    static let panelTitleText     = srgb(0xE0, 0xDF, 0xEA)   // rename field editor text
+    static let panelHeaderText         = srgb(0x5B, 0x59, 0x59)   // window panel header title (default)
+    static let panelHeaderTextSelected = srgb(0x92, 0x8F, 0x8F)   // window panel header title (selected)
+
+    static let tabBarBackground = srgb(0x1A, 0x19, 0x20)   // browser tab strip
+    static let tabActiveFill    = srgb(0x2C, 0x2A, 0x36)   // active browser tab chip
+
+    static let dockFill   = srgb(0x1E, 0x1D, 0x26)            // floating dock background
+    static let dockBorder = srgb(0x3A, 0x39, 0x47)           // floating dock border / divider
+    static let dockIcon   = srgb(0xC9, 0xC6, 0xD6)           // dock icon stroke
+    static let dockHover  = NSColor(white: 1.0, alpha: 0.10) // dock button hover highlight
 
     static let editorBackground = srgb(0x24, 0x23, 0x30)
 

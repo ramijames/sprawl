@@ -28,10 +28,20 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     var onClearSelection: (() -> Void)?
     /// The user renamed a project by editing its tab.
     var onRenameProject: ((UUID, String) -> Void)?
+    /// The collapse chevron was clicked.
+    var onToggleCollapse: ((UUID) -> Void)?
+    /// A color was picked from the tab's color dropdown (nil = no color).
+    var onSetProjectColor: ((UUID, Int?) -> Void)?
 
     private weak var nameEditor: NSTextField?
     private weak var editingProject: Project?
     private var isEditingName = false
+
+    // Tab-drag: grab a project's tab to move the whole project (all its windows) around.
+    private weak var draggingProject: Project?
+    private var dragStartMouse: NSPoint = .zero
+    private var dragStartAnchor: NSPoint = .zero
+    private var dragWindowOrigins: [(window: WindowView, origin: NSPoint)] = []
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { true }
@@ -83,23 +93,83 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     private func drawFolder(for project: Project, selected: Bool) {
         let layout = folderLayout(for: project)
-        let path = folderPath(body: layout.body, tabWidth: layout.tab.width)
-        Palette.projectFill.setFill()
-        path.fill()
-        if selected {
-            NSColor.white.setStroke()
-            path.lineWidth = 3
-            path.stroke()
-        }
+        let fill = Palette.tinted(Palette.projectFill, with: project.color)
+        let stroke = Palette.tinted(selected ? Palette.projectStrokeSelected : Palette.projectStroke,
+                                    with: project.color)
+        // Collapsed projects draw as just the tab (a rounded pill); expanded draw the full folder.
+        let shape = project.isCollapsed
+            ? NSBezierPath(roundedRect: layout.tab, xRadius: Self.tabRadius, yRadius: Self.tabRadius)
+            : folderPath(body: layout.body, tabWidth: layout.tab.width)
+        fill.setFill()
+        shape.fill()
+        stroke.setStroke()
+        shape.lineWidth = 1
+        shape.stroke()
+
+        drawChevron(in: layout.chevron, collapsed: project.isCollapsed)
+        drawColorDot(in: layout.dot, color: project.color)
         // The live text field stands in for the drawn label while this project's tab is edited.
         if isEditingName, editingProject === project { return }
+        drawTabTitle(project.name, in: layout)
+    }
+
+    private func drawChevron(in rect: NSRect, collapsed: Bool) {
+        let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
+        Palette.projectTabText.setStroke()
+        ring.lineWidth = 1
+        ring.stroke()
+        let c = NSPoint(x: rect.midX, y: rect.midY)
+        let s: CGFloat = 3.2
+        let glyph = NSBezierPath()
+        if collapsed {   // ">" pointing right
+            glyph.move(to: NSPoint(x: c.x - s * 0.7, y: c.y - s))
+            glyph.line(to: NSPoint(x: c.x + s * 0.7, y: c.y))
+            glyph.line(to: NSPoint(x: c.x - s * 0.7, y: c.y + s))
+        } else {         // "v" pointing down (flipped view: larger y is lower)
+            glyph.move(to: NSPoint(x: c.x - s, y: c.y - s * 0.6))
+            glyph.line(to: NSPoint(x: c.x, y: c.y + s * 0.7))
+            glyph.line(to: NSPoint(x: c.x + s, y: c.y - s * 0.6))
+        }
+        glyph.lineWidth = 1.5
+        glyph.lineCapStyle = .round
+        glyph.lineJoinStyle = .round
+        Palette.projectTabText.setStroke()
+        glyph.stroke()
+    }
+
+    private func drawColorDot(in rect: NSRect, color: NSColor?) {
+        let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
+        Palette.projectStroke.setStroke()
+        ring.lineWidth = 1
+        ring.stroke()
+        let dot = NSBezierPath(ovalIn: rect.insetBy(dx: 3, dy: 3))
+        (color ?? NSColor(srgbRed: 0.42, green: 0.42, blue: 0.48, alpha: 1)).setFill()
+        dot.fill()
+    }
+
+    private func drawTabTitle(_ name: String, in layout: FolderLayout) {
         let attrs: [NSAttributedString.Key: Any] = [.font: Self.tabFont, .foregroundColor: Palette.projectTabText]
-        let labelSize = project.name.size(withAttributes: attrs)
-        let origin = NSPoint(x: layout.tab.minX + tabLabelInset, y: layout.tab.minY + (tabHeight - labelSize.height) / 2)
-        project.name.draw(at: origin, withAttributes: attrs)
+        let size = name.size(withAttributes: attrs)
+        let clip = NSRect(x: layout.titleX, y: layout.tab.minY,
+                          width: max(0, layout.titleMaxX - layout.titleX), height: layout.tab.height)
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: clip).addClip()
+        name.draw(at: NSPoint(x: layout.titleX, y: layout.tab.minY + (tabHeight - size.height) / 2),
+                  withAttributes: attrs)
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     // MARK: - Per-project geometry
+
+    private static let tabRadius: CGFloat = 12
+    private struct FolderLayout {
+        var body: NSRect
+        var tab: NSRect
+        var chevron: NSRect
+        var dot: NSRect
+        var titleX: CGFloat
+        var titleMaxX: CGFloat
+    }
 
     /// The project's content region: the union of its window frames, or a default box at its
     /// anchor while it has no windows.
@@ -111,27 +181,34 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         return NSRect(origin: project.anchor, size: SharedCanvasLayout.defaultEmptyContent)
     }
 
-    private func folderLayout(for project: Project) -> (body: NSRect, tab: NSRect) {
+    private func folderLayout(for project: Project) -> FolderLayout {
         let body = contentRect(for: project).insetBy(dx: -framePadding, dy: -framePadding)
-        let bodyRadius: CGFloat = 20, valley: CGFloat = 16, tabRadius: CGFloat = 12
-        let labelWidth = project.name.size(withAttributes: [.font: Self.tabFont]).width
-        let desiredRight = body.minX + max(labelWidth + tabLabelInset * 2, 2 * tabRadius)
-        let tabRight = min(desiredRight, body.maxX - bodyRadius - valley)
-        let tab = NSRect(x: body.minX, y: body.minY - tabHeight,
-                         width: max(2 * tabRadius, tabRight - body.minX), height: tabHeight)
-        return (body, tab)
+        let bodyRadius: CGFloat = 20, valley: CGFloat = 16
+        let leftPad: CGFloat = 14, chevronD: CGFloat = 18, gap1: CGFloat = 10
+        let gap2: CGFloat = 12, dotD: CGFloat = 16, rightPad: CGFloat = 14
+        let labelW = project.name.size(withAttributes: [.font: Self.tabFont]).width
+        let minW = leftPad + chevronD + gap1 + 24 + gap2 + dotD + rightPad
+        let desiredW = leftPad + chevronD + gap1 + labelW + gap2 + dotD + rightPad
+        let tabRight = max(body.minX + minW, min(body.minX + desiredW, body.maxX - bodyRadius - valley))
+        let tab = NSRect(x: body.minX, y: body.minY - tabHeight, width: tabRight - body.minX, height: tabHeight)
+        let chevron = NSRect(x: tab.minX + leftPad, y: tab.midY - chevronD / 2, width: chevronD, height: chevronD)
+        let dot = NSRect(x: tab.maxX - rightPad - dotD, y: tab.midY - dotD / 2, width: dotD, height: dotD)
+        return FolderLayout(body: body, tab: tab, chevron: chevron, dot: dot,
+                            titleX: chevron.maxX + gap1, titleMaxX: dot.minX - gap2)
     }
 
     private func folderPath(for project: Project) -> NSBezierPath {
         let layout = folderLayout(for: project)
+        if project.isCollapsed {
+            return NSBezierPath(roundedRect: layout.tab, xRadius: Self.tabRadius, yRadius: Self.tabRadius)
+        }
         return folderPath(body: layout.body, tabWidth: layout.tab.width)
     }
 
-    /// Bounding box of the whole folder (body + tab) — for dirtyRect culling, hit-test tie-breaks,
-    /// and pan-to-project framing.
+    /// Bounding box of the folder — for dirtyRect culling, hit-test tie-breaks, and pan-to-project.
     func folderBounds(for project: Project) -> NSRect {
         let layout = folderLayout(for: project)
-        return layout.body.union(layout.tab)
+        return project.isCollapsed ? layout.tab : layout.body.union(layout.tab)
     }
 
     // MARK: - Click handling (selection + rename)
@@ -146,11 +223,24 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             .min { area(folderBounds(for: $0)) < area(folderBounds(for: $1)) }
 
         if let project = hit {
+            let layout = folderLayout(for: project)
+            if layout.chevron.insetBy(dx: -4, dy: -4).contains(point) {
+                onToggleCollapse?(project.id)
+                return
+            }
+            if layout.dot.insetBy(dx: -4, dy: -4).contains(point) {
+                showColorPicker(for: project)
+                return
+            }
             onSelectProjectFolder?(project.id)
-            if event.clickCount == 2, !isEditingName, folderLayout(for: project).tab.contains(point) {
-                DispatchQueue.main.async { [weak self, weak project] in
-                    guard let self, let project, !self.isEditingName else { return }
-                    self.beginEditingName(for: project)
+            if layout.tab.contains(point), !isEditingName {
+                if event.clickCount == 2 {
+                    DispatchQueue.main.async { [weak self, weak project] in
+                        guard let self, let project, !self.isEditingName else { return }
+                        self.beginEditingName(for: project)
+                    }
+                } else {
+                    beginTabDrag(project, at: point)   // grab the tab to move the whole project
                 }
             }
         } else {
@@ -159,7 +249,54 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         super.mouseDown(with: event)
     }
 
+    // MARK: - Tab drag (move a whole project)
+
+    private func beginTabDrag(_ project: Project, at point: NSPoint) {
+        draggingProject = project
+        dragStartMouse = point
+        dragStartAnchor = project.anchor
+        dragWindowOrigins = project.items.compactMap { item in
+            item.window.map { (window: $0, origin: $0.frame.origin) }
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let project = draggingProject else { super.mouseDragged(with: event); return }
+        let point = convert(event.locationInWindow, from: nil)
+        let dx = point.x - dragStartMouse.x, dy = point.y - dragStartMouse.y
+        if dragWindowOrigins.isEmpty {
+            project.anchor = NSPoint(x: dragStartAnchor.x + dx, y: dragStartAnchor.y + dy)
+        } else {
+            for entry in dragWindowOrigins {
+                entry.window.setFrameOrigin(NSPoint(x: entry.origin.x + dx, y: entry.origin.y + dy))
+            }
+        }
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if draggingProject != nil {
+            draggingProject = nil
+            dragWindowOrigins = []
+            onLayoutChange?()   // persist the moved positions
+        }
+        super.mouseUp(with: event)
+    }
+
     private func area(_ r: NSRect) -> CGFloat { r.width * r.height }
+
+    // MARK: - Project color dropdown (4×4 grid popover)
+
+    private func showColorPicker(for project: Project) {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.appearance = NSAppearance(named: .darkAqua)
+        let id = project.id
+        popover.contentViewController = ProjectColorPicker(current: project.colorIndex, popover: popover) { [weak self] index in
+            self?.onSetProjectColor?(id, index)
+        }
+        popover.show(relativeTo: folderLayout(for: project).dot, of: self, preferredEdge: .maxY)
+    }
 
     // MARK: - Renaming via a borderless child panel (own field editor — see notes below)
     //
@@ -182,7 +319,11 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         editingProject = project
 
         let mag = enclosingScrollView?.magnification ?? 1
-        let box = folderLayout(for: project).tab.insetBy(dx: 8, dy: 8)
+        // Edit only the title region (between the chevron and the color dot), not the whole tab.
+        let layout = folderLayout(for: project)
+        let box = NSRect(x: layout.titleX - 6, y: layout.tab.minY + 7,
+                         width: max(40, layout.titleMaxX - layout.titleX + 12),
+                         height: layout.tab.height - 14)
         let onScreen = parentWindow.convertToScreen(convert(box, to: nil))
 
         let panel = NameEditorPanel(contentRect: NSRect(origin: .zero, size: onScreen.size),

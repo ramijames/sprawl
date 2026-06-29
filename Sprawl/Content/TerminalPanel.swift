@@ -20,6 +20,7 @@ final class TerminalPanel: NSObject, LocalProcessTerminalViewDelegate {
         terminalView = LocalProcessTerminalView(frame: .zero)
         super.init()
         terminalView.processDelegate = self
+        terminalView.nativeBackgroundColor = Palette.panelBody   // #141414, matches the chrome
         startShell(in: startDirectory)
     }
 
@@ -99,6 +100,18 @@ extension NSView {
         var view: NSView? = self
         while let current = view {
             if let panel = current as? WindowView { return panel }
+            view = current.superview
+        }
+        return nil
+    }
+
+    /// The enclosing canvas scroll view, if this view lives on the canvas (used to route ⌘-scroll
+    /// zoom to the canvas even when the cursor is over a terminal or editor that would otherwise
+    /// swallow the event). Walks past any nearer scroll view (e.g. the code editor's own).
+    var enclosingCanvasScrollView: CanvasScrollView? {
+        var view: NSView? = self
+        while let current = view {
+            if let canvas = current as? CanvasScrollView { return canvas }
             view = current.superview
         }
         return nil

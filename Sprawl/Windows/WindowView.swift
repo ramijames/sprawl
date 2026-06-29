@@ -7,9 +7,18 @@ import AppKit
 /// downward), so drag/resize math is done in the superview's coordinate space. The panel
 /// itself is a standard (non-flipped) view for its own internal layout.
 final class WindowView: NSView {
-    static let titleBarHeight: CGFloat = 28
+    static let headerHeight: CGFloat = 30
     static let resizeMargin: CGFloat = 7
+    /// Inner margin between the panel edge and its hosted content.
+    static let contentPadding: CGFloat = 12
     static let minSize = NSSize(width: 220, height: 140)
+
+    /// macOS-style close-button red.
+    private static let closeColor = NSColor(srgbRed: 1.0, green: 0.37, blue: 0.34, alpha: 1)
+    private static func closeImage(_ name: String) -> NSImage? {
+        let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        return NSImage(systemSymbolName: name, accessibilityDescription: "Close")?.withSymbolConfiguration(cfg)
+    }
 
     /// Host terminal/editor views here.
     let contentContainer = ContentContainerView()
@@ -62,10 +71,10 @@ final class WindowView: NSView {
         layer?.shadowOffset = CGSize(width: 0, height: -3)
         layer?.masksToBounds = false
 
-        closeButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Close")
+        closeButton.image = Self.closeImage("circle.fill")   // a red dot; shows ✕ on hover
         closeButton.imagePosition = .imageOnly
         closeButton.isBordered = false
-        closeButton.contentTintColor = NSColor(calibratedWhite: 0.55, alpha: 1)
+        closeButton.contentTintColor = Self.closeColor
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
         addSubview(closeButton)
@@ -86,14 +95,16 @@ final class WindowView: NSView {
     override func layout() {
         super.layout()
         let b = bounds
-        let m = Self.resizeMargin
-        let titleTop = b.height - Self.titleBarHeight
-        closeButton.frame = NSRect(x: 9, y: titleTop + (Self.titleBarHeight - 16) / 2, width: 16, height: 16)
+        let pad = Self.contentPadding
+        let header = Self.headerHeight
+        let dot: CGFloat = 13
+        closeButton.frame = NSRect(x: 11, y: b.height - header + (header - dot) / 2, width: dot, height: dot)
+        // Content sits inside the panel with padding on the sides/bottom and below the header.
         contentContainer.frame = NSRect(
-            x: m,
-            y: m,
-            width: max(0, b.width - 2 * m),
-            height: max(0, titleTop - m))
+            x: pad,
+            y: pad,
+            width: max(0, b.width - 2 * pad),
+            height: max(0, b.height - header - pad))
     }
 
     override var isOpaque: Bool { false }
@@ -115,36 +126,24 @@ final class WindowView: NSView {
         let body = bounds.insetBy(dx: 0.5, dy: 0.5)
         let bodyPath = NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius)
 
+        // Thin chrome: a filled body and a single hairline border — no separate title-bar band.
+        // Selection just recolors that 1px border.
         Palette.panelBody.setFill()
         bodyPath.fill()
-
-        NSGraphicsContext.saveGraphicsState()
-        bodyPath.addClip()
-        let titleRect = NSRect(x: 0, y: bounds.height - Self.titleBarHeight, width: bounds.width, height: Self.titleBarHeight)
-        Palette.panelTitleBar.setFill()
-        titleRect.fill()
-        NSGraphicsContext.restoreGraphicsState()
-
-        Palette.panelBorder.setStroke()
+        (isSelected ? Palette.panelBorderSelected : Palette.panelBorder).setStroke()
         bodyPath.lineWidth = 1
         bodyPath.stroke()
 
+        // Centered title in the header strip, kept clear of the close dot.
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: Palette.panelTitleText,
         ]
         let textSize = title.size(withAttributes: attrs)
         let textOrigin = NSPoint(
-            x: 32,
-            y: bounds.height - Self.titleBarHeight + (Self.titleBarHeight - textSize.height) / 2)
+            x: max(closeButton.frame.maxX + 8, (bounds.width - textSize.width) / 2),
+            y: bounds.height - Self.headerHeight + (Self.headerHeight - textSize.height) / 2)
         title.draw(at: textOrigin, withAttributes: attrs)
-
-        if isSelected {
-            let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5), xRadius: radius, yRadius: radius)
-            NSColor.white.setStroke()
-            outline.lineWidth = 3
-            outline.stroke()
-        }
     }
 
     // MARK: - Mouse: move & resize
@@ -155,7 +154,7 @@ final class WindowView: NSView {
         let edges = edgeMask(at: local)
         if !edges.isEmpty {
             dragMode = .resize(edges)
-        } else if local.y >= bounds.height - Self.titleBarHeight {
+        } else if local.y >= bounds.height - Self.headerHeight {
             dragMode = .move
         } else {
             dragMode = .none
@@ -233,7 +232,12 @@ final class WindowView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        let edges = edgeMask(at: convert(event.locationInWindow, from: nil))
+        let local = convert(event.locationInWindow, from: nil)
+        // Reveal the ✕ when hovering the close dot, like the macOS traffic light.
+        let overClose = closeButton.frame.insetBy(dx: -3, dy: -3).contains(local)
+        closeButton.image = Self.closeImage(overClose ? "xmark.circle.fill" : "circle.fill")
+
+        let edges = edgeMask(at: local)
         let horizontal = edges.contains(.left) || edges.contains(.right)
         let vertical = edges.contains(.top) || edges.contains(.bottom)
         if horizontal { NSCursor.resizeLeftRight.set() }
@@ -243,6 +247,7 @@ final class WindowView: NSView {
 
     override func mouseExited(with event: NSEvent) {
         NSCursor.arrow.set()
+        closeButton.image = Self.closeImage("circle.fill")
     }
 
     @objc private func closeClicked() {

@@ -6,6 +6,10 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 ## 2026-06-28
 
 ### Added
+- **Project tabs.** Each tab now has a **collapse** chevron (hides the project's windows and
+  shrinks the folder to just its tab) and a **color** dot opening a 4×4 grid of 16 preset colors;
+  the chosen color subtly tints the folder fill/stroke. **Drag a project by its tab** to move the
+  whole project (all its windows) at once. Collapse state and color persist.
 - **Persistent workspace.** The whole session is saved to
   `~/Library/Application Support/Sprawl/workspace.json` (continuous, debounced autosave + a save
   on quit) and restored on launch: OS window position/size, projects, panels (kind, title,
@@ -25,6 +29,12 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 - **`RELEASES.md`** (this file) and an expanded **`README.md`**.
 
 ### Changed
+- **Panel chrome redesign.** A single hairline border (no title-bar band), centered title, a
+  macOS-style red close dot that reveals ✕ on hover, and more inner content padding.
+- **New colors.** Folders are `#272634` with `#343345` / `#5E5C7D` borders; terminal windows and
+  their content are `#141414` with `#383838` / `#5B5959` borders. Selection now just recolors the
+  1px border instead of drawing a thick white outline.
+- **⌘-scroll zooms anywhere** over the canvas — even when the cursor is over a terminal or editor.
 - **Terminal scrolling.** Plain scroll over a terminal now scrolls *that terminal*: the
   scrollback on the normal screen, or — for full-screen apps (Claude Code, `less`, `vim`) — real
   mouse-wheel events when the app uses mouse reporting, else arrow keys (alternate-scroll).

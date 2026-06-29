@@ -40,6 +40,9 @@ struct ProjectState: Codable {
     /// Content-region top-left in shared-canvas coords; authoritative for empty folders and the
     /// spawn seed for the project's first window.
     var anchor: CGPoint?
+    /// Collapsed state and accent color index (into Palette.projectColors).
+    var collapsed: Bool?
+    var colorIndex: Int?
 
     // Legacy v1 per-project viewport — optional, read only during migration; v2 writes omit them.
     var magnification: CGFloat?

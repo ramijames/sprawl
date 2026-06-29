@@ -59,12 +59,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self,
                   let contentView = event.window?.contentView,
-                  let hit = contentView.hitTest(event.locationInWindow),
-                  hit.isInsideTerminal else {
-                return event   // not over a terminal: normal canvas pan/zoom
+                  let hit = contentView.hitTest(event.locationInWindow) else {
+                return event
             }
+            // ⌘ + scroll zooms the canvas wherever the cursor is over it — even over a terminal or
+            // editor that would otherwise swallow the scroll.
+            if event.modifierFlags.contains(.command), let canvas = hit.enclosingCanvasScrollView {
+                canvas.scrollWheel(with: event)
+                return nil
+            }
+            guard hit.isInsideTerminal else { return event }   // non-terminal: normal canvas pan/zoom
             if event.modifierFlags.contains(.option) {
-                (hit.enclosingScrollView as? CanvasScrollView)?.scrollWheel(with: event)
+                hit.enclosingCanvasScrollView?.scrollWheel(with: event)
                 return nil     // ⌥ over a terminal: pan the canvas
             }
             let points = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY * 16

@@ -39,6 +39,15 @@ final class Project {
     var items: [WorkItem] = []
     /// Content-region top-left in shared-canvas coordinates.
     var anchor: NSPoint = .zero
+    /// Collapsed projects hide their windows and draw as just the tab.
+    var isCollapsed: Bool = false
+    /// Index into `Palette.projectColors`, or nil for no accent color.
+    var colorIndex: Int?
+
+    var color: NSColor? {
+        guard let i = colorIndex, Palette.projectColors.indices.contains(i) else { return nil }
+        return Palette.projectColors[i]
+    }
 
     init(name: String, id: UUID = UUID(), anchor: NSPoint = .zero) {
         self.id = id
@@ -93,6 +102,28 @@ final class AppModel {
             self.selectProject(project)
         }
         canvas.onClearSelection = { [weak self] in self?.clearSelection() }
+        canvas.onToggleCollapse = { [weak self] id in
+            guard let self, let project = self.projects.first(where: { $0.id == id }) else { return }
+            self.toggleCollapse(project)
+        }
+        canvas.onSetProjectColor = { [weak self] id, index in
+            guard let self, let project = self.projects.first(where: { $0.id == id }) else { return }
+            project.colorIndex = index
+            self.canvas.needsDisplay = true
+            self.onPersistableChange?()
+        }
+    }
+
+    func toggleCollapse(_ project: Project) {
+        project.isCollapsed.toggle()
+        applyCollapse(project)
+        canvas.needsDisplay = true
+        onPersistableChange?()
+    }
+
+    /// Hide/show a project's windows to match its collapsed state.
+    private func applyCollapse(_ project: Project) {
+        for item in project.items { item.window?.isHidden = project.isCollapsed }
     }
 
     // MARK: - Projects & items
@@ -132,6 +163,7 @@ final class AppModel {
             name = "\(base) \(count)"
         }
 
+        if project.isCollapsed { project.isCollapsed = false }   // adding content expands the folder
         let item = installItem(in: project, kind: kind, name: name,
                                frame: spawnFrame(in: project),
                                documentURL: url, documentText: nil,
@@ -280,7 +312,8 @@ final class AppModel {
             } else {
                 anchor = project.anchor
             }
-            return ProjectState(id: project.id, name: project.name, items: items, anchor: anchor)
+            return ProjectState(id: project.id, name: project.name, items: items, anchor: anchor,
+                                collapsed: project.isCollapsed, colorIndex: project.colorIndex)
         }
         return state
     }
@@ -291,6 +324,8 @@ final class AppModel {
         viewport = state.viewport
         for ps in state.projects {
             let project = Project(name: ps.name, id: ps.id, anchor: ps.anchor ?? .zero)
+            project.isCollapsed = ps.collapsed ?? false
+            project.colorIndex = ps.colorIndex
             projects.append(project)
 
             for item in ps.items {
@@ -304,6 +339,7 @@ final class AppModel {
                             terminalDirectory: item.workingDirectory,
                             focus: false)
             }
+            applyCollapse(project)   // hide windows if the project was collapsed
         }
 
         if let id = state.currentProjectID {

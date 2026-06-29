@@ -161,7 +161,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     // MARK: - Per-project geometry
 
-    private static let tabRadius: CGFloat = 12
+    private static let tabRadius: CGFloat = 16
     private struct FolderLayout {
         var body: NSRect
         var tab: NSRect
@@ -183,7 +183,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     private func folderLayout(for project: Project) -> FolderLayout {
         let body = contentRect(for: project).insetBy(dx: -framePadding, dy: -framePadding)
-        let bodyRadius: CGFloat = 20, valley: CGFloat = 16
+        let bodyRadius: CGFloat = 30, valley: CGFloat = 16
         let leftPad: CGFloat = 14, chevronD: CGFloat = 18, gap1: CGFloat = 10
         let gap2: CGFloat = 12, dotD: CGFloat = 16, rightPad: CGFloat = 14
         let labelW = project.name.size(withAttributes: [.font: Self.tabFont]).width
@@ -460,8 +460,8 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     /// A rounded body with a top-left tab that flares into the body top edge via a concave fillet.
     private func folderPath(body: NSRect, tabWidth: CGFloat) -> NSBezierPath {
-        let bodyRadius: CGFloat = 20
-        let tabRadius: CGFloat = 12
+        let bodyRadius: CGFloat = 30
+        let tabRadius = Self.tabRadius
         let valley: CGFloat = 16
 
         let L = body.minX, R = body.maxX, T = body.minY, B = body.maxY

@@ -62,17 +62,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   let hit = contentView.hitTest(event.locationInWindow) else {
                 return event
             }
-            // ⌘ + scroll zooms the canvas wherever the cursor is over it — even over a terminal or
-            // editor that would otherwise swallow the scroll.
-            if event.modifierFlags.contains(.command), let canvas = hit.enclosingCanvasScrollView {
+            // Modifiers take over canvas navigation no matter what's under the cursor (terminal,
+            // browser, editor): ⌘ zooms, ⌥ pans — the item never scrolls while a modifier is held.
+            if let canvas = hit.enclosingCanvasScrollView,
+               event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option) {
                 canvas.scrollWheel(with: event)
                 return nil
             }
-            guard hit.isInsideTerminal else { return event }   // non-terminal: normal canvas pan/zoom
-            if event.modifierFlags.contains(.option) {
-                hit.enclosingCanvasScrollView?.scrollWheel(with: event)
-                return nil     // ⌥ over a terminal: pan the canvas
-            }
+            guard hit.isInsideTerminal else { return event }   // plain scroll over a terminal -> buffer
             let points = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY * 16
             hit.scrollEnclosingTerminal(points: points, locationInWindow: event.locationInWindow,
                                         accumulator: &self.terminalScrollAccumulator)

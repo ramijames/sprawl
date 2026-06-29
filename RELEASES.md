@@ -6,6 +6,9 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 ## 2026-06-28
 
 ### Added
+- **Browser popups & dialogs.** `target="_blank"` / `window.open` now open a single new browser
+  panel (instead of navigating in place or duplicating); JS `alert`/`confirm`/`prompt` show as
+  sheets; and a popup that calls `window.close()` closes itself, so OAuth/login flows complete.
 - **Browser windows.** A third panel type alongside terminals and documents: a `WKWebView` with
   an address bar (back/forward + a URL/search field). Create with **New Browser** (⌘B) or the
   toolbar/sidebar **+** menus; the window title follows the page title, and each browser's last
@@ -33,6 +36,10 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 - **`RELEASES.md`** (this file) and an expanded **`README.md`**.
 
 ### Changed
+- **Modifier canvas navigation.** Holding **⌥ pans** / **⌘ zooms** the canvas over *any* item
+  (terminal, browser, editor) — the item no longer scrolls while a modifier is held.
+- **Rounder corners.** Larger radii on project folders and window panels; the hosted content
+  (terminal/browser/editor) is clipped to match.
 - **Panel chrome redesign.** A single hairline border (no title-bar band), centered title, a
   macOS-style red close dot that reveals ✕ on hover, and more inner content padding.
 - **New colors.** Folders are `#272634` with `#343345` / `#5E5C7D` borders; terminal windows and

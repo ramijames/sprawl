@@ -79,6 +79,9 @@ final class WindowView: NSView {
         closeButton.action = #selector(closeClicked)
         addSubview(closeButton)
 
+        contentContainer.wantsLayer = true
+        contentContainer.layer?.cornerRadius = 10
+        contentContainer.layer?.masksToBounds = true   // round the hosted terminal/browser/editor
         addSubview(contentContainer)
         needsLayout = true
     }
@@ -122,7 +125,7 @@ final class WindowView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        let radius: CGFloat = 9
+        let radius: CGFloat = 16
         let body = bounds.insetBy(dx: 0.5, dy: 0.5)
         let bodyPath = NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius)
 

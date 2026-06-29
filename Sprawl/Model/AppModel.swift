@@ -183,6 +183,21 @@ final class AppModel {
         return item
     }
 
+    /// Host a popup browser panel (created by WebKit's `createWebViewWith`) as a new item in a
+    /// project, so `target="_blank"` / `window.open` open a new browser window.
+    func hostBrowser(_ panel: BrowserPanel, in project: Project) {
+        if project.isCollapsed { project.isCollapsed = false }
+        let count = project.items.filter { $0.kind == .browser }.count + 1
+        let item = installItem(in: project, kind: .browser, name: "Browser \(count)",
+                               frame: spawnFrame(in: project),
+                               contentURL: nil, documentText: nil,
+                               terminalDirectory: nil, focus: true,
+                               browserPanel: panel)
+        select(.item(item.id))
+        onModelChange?()
+        onPersistableChange?()
+    }
+
     /// Where a new window for a project spawns: cascaded near its existing windows, or at its
     /// anchor when empty, so it joins the project's folder instead of the viewport center.
     private func spawnFrame(in project: Project, size: NSSize = NSSize(width: 460, height: 320)) -> NSRect {
@@ -205,7 +220,8 @@ final class AppModel {
                              contentURL: URL?,
                              documentText: String?,
                              terminalDirectory: String?,
-                             focus: Bool) -> WorkItem {
+                             focus: Bool,
+                             browserPanel: BrowserPanel? = nil) -> WorkItem {
         let window = canvas.addWindow(title: name, frame: frame)
         let item = WorkItem(name: name, kind: kind, window: window)
         window.onClose = { [weak self, weak project, weak item] closedWindow in
@@ -240,13 +256,21 @@ final class AppModel {
             item.document = panel
             activeDocumentItem = item
         case .browser:
-            let panel = BrowserPanel(url: contentURL)
+            let panel = browserPanel ?? BrowserPanel(url: contentURL)
             panel.attach(to: window)
             panel.onTitleChange = { [weak window] title in
                 guard let window, !title.isEmpty else { return }
                 window.title = title
             }
             panel.onURLChange = { [weak self] in self?.onPersistableChange?() }
+            panel.onHostNewBrowser = { [weak self, weak project] popup in
+                guard let self, let project else { return }
+                self.hostBrowser(popup, in: project)
+            }
+            panel.onRequestClose = { [weak window] in
+                guard let window else { return }
+                window.onClose?(window)
+            }
             item.browser = panel
         }
 

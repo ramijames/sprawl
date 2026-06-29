@@ -3,9 +3,9 @@ import WebKit
 
 /// Owns a `WKWebView` plus a small address bar, hosted inside a window panel. The only file that
 /// touches WebKit.
-final class BrowserPanel: NSObject, WKNavigationDelegate {
+final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate {
     private let container = NSView()
-    private let webView: WKWebView
+    let webView: WKWebView
     private let addressField = NSTextField()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
@@ -14,6 +14,11 @@ final class BrowserPanel: NSObject, WKNavigationDelegate {
     var onTitleChange: ((String) -> Void)?
     /// Navigation changed the URL — request an autosave so the browser restores where it was.
     var onURLChange: (() -> Void)?
+    /// A link/script asked for a new window: the model should host this freshly-created browser
+    /// panel as a new item in the project. (WebKit then loads the popup into its web view.)
+    var onHostNewBrowser: ((BrowserPanel) -> Void)?
+    /// The page called `window.close()` — close this panel (so OAuth/sign-in popups self-dismiss).
+    var onRequestClose: (() -> Void)?
 
     var currentURL: String? { webView.url?.absoluteString }
 
@@ -22,9 +27,22 @@ final class BrowserPanel: NSObject, WKNavigationDelegate {
     init(url: URL?) {
         webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         super.init()
-        webView.navigationDelegate = self
-        buildUI()
+        commonSetup()
         load(url ?? Self.homePage)
+    }
+
+    /// For popups: WebKit hands us its `configuration` and loads the popup request into the web
+    /// view we return, so we must NOT load anything here.
+    init(configuration: WKWebViewConfiguration) {
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        super.init()
+        commonSetup()
+    }
+
+    private func commonSetup() {
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        buildUI()
     }
 
     func attach(to window: WindowView) {
@@ -132,5 +150,63 @@ final class BrowserPanel: NSObject, WKNavigationDelegate {
         if let title = webView.title, !title.isEmpty { onTitleChange?(title) }
         updateNavButtons()
         onURLChange?()
+    }
+
+    // MARK: - WKUIDelegate
+
+    /// Links/JS that ask for a new window (`target="_blank"`, `window.open`) have no target frame.
+    /// Open them as a new browser panel rather than dropping or navigating in place.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        guard navigationAction.targetFrame == nil else { return nil }
+        let popup = BrowserPanel(configuration: configuration)
+        onHostNewBrowser?(popup)
+        return popup.webView   // WebKit loads the popup request into this web view
+    }
+
+    /// `window.close()` from script (e.g. an OAuth popup after login) — close this panel.
+    func webViewDidClose(_ webView: WKWebView) {
+        onRequestClose?()
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        runAlert(alert, on: webView) { _ in completionHandler() }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        runAlert(alert, on: webView) { response in completionHandler(response == .alertFirstButtonReturn) }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?, initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (String?) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = prompt
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = defaultText ?? ""
+        alert.accessoryView = field
+        runAlert(alert, on: webView) { response in
+            completionHandler(response == .alertFirstButtonReturn ? field.stringValue : nil)
+        }
+    }
+
+    private func runAlert(_ alert: NSAlert, on webView: WKWebView,
+                          completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        if let window = webView.window {
+            alert.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion(alert.runModal())
+        }
     }
 }

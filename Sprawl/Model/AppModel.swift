@@ -14,6 +14,10 @@ final class LayoutBox {
     init(_ layout: TileLayout) { self.layout = layout }
 }
 
+/// A project's persistent layout mode. `grid` / `columns` are *live*: the project re-tiles itself
+/// whenever a window is added, removed, or moved. `freeform` leaves windows wherever you put them.
+enum ProjectLayoutMode: String { case freeform, grid, columns }
+
 /// A single item living inside a project: a terminal or a document. Each is backed by a
 /// `WindowView` panel on the shared canvas.
 final class WorkItem {
@@ -103,10 +107,10 @@ final class Project {
     var items: [WorkItem] = []
     /// Content-region top-left in shared-canvas coordinates.
     var anchor: NSPoint = .zero
-    /// Collapsed projects hide their windows and draw as just the tab.
-    var isCollapsed: Bool = false
     /// Index into `Palette.projectColors`, or nil for no accent color.
     var colorIndex: Int?
+    /// Live tiling mode (freeform / grid / columns). Set via the project options bar.
+    var layoutMode: ProjectLayoutMode = .freeform
 
     var color: NSColor? {
         guard let i = colorIndex, Palette.projectColors.indices.contains(i) else { return nil }
@@ -180,28 +184,11 @@ final class AppModel {
     init() {
         canvas.model = self
         canvas.onLayoutChange = { [weak self] in self?.onPersistableChange?() }
-        canvas.onRenameProject = { [weak self] id, newName in
-            guard let self, let project = self.projects.first(where: { $0.id == id }) else { return }
-            project.name = newName
-            self.canvas.needsDisplay = true
-            self.onModelChange?()             // sidebar reflects the new name
-            self.onPersistableChange?()
-        }
         canvas.onSelectProjectFolder = { [weak self] id in
             guard let self, let project = self.projects.first(where: { $0.id == id }) else { return }
             self.selectProject(project)
         }
         canvas.onClearSelection = { [weak self] in self?.clearSelection() }
-        canvas.onToggleCollapse = { [weak self] id in
-            guard let self, let project = self.projects.first(where: { $0.id == id }) else { return }
-            self.toggleCollapse(project)
-        }
-        canvas.onSetProjectColor = { [weak self] id, index in
-            guard let self, let project = self.projects.first(where: { $0.id == id }) else { return }
-            project.colorIndex = index
-            self.canvas.needsDisplay = true
-            self.onPersistableChange?()
-        }
         canvas.onCreateProject = { [weak self] point in
             guard let self else { return }
             let project = self.addProject(name: "Project \(self.projects.count + 1)",
@@ -228,16 +215,132 @@ final class AppModel {
         return NSPoint(x: min(max(0, origin.x), maxX), y: min(max(0, origin.y), maxY))
     }
 
-    func toggleCollapse(_ project: Project) {
-        project.isCollapsed.toggle()
-        applyCollapse(project)
+    /// Set a project's accent color (index into `Palette.projectColors`, or nil for none).
+    func setProjectColor(_ project: Project, _ index: Int?) {
+        project.colorIndex = index
         canvas.needsDisplay = true
         onPersistableChange?()
     }
 
-    /// Hide/show a project's windows to match its collapsed state.
-    private func applyCollapse(_ project: Project) {
-        for item in project.items { item.window?.isHidden = project.isCollapsed }
+    /// Set a project's live tiling mode. Switching to grid/columns tiles it now (one undoable step);
+    /// freeform just stops auto-arranging.
+    func setProjectLayout(_ project: Project, _ mode: ProjectLayoutMode) {
+        project.layoutMode = mode
+        canvas.needsDisplay = true
+        onPersistableChange?()
+        if let layout = Self.tileLayout(for: mode) { tileProject(project, layout: layout) }
+    }
+
+    private static func tileLayout(for mode: ProjectLayoutMode) -> TileLayout? {
+        switch mode {
+        case .freeform: return nil
+        case .grid: return .gridAuto
+        case .columns: return .columns
+        }
+    }
+
+    // MARK: Live drag-to-reorder (tiled projects)
+
+    /// State while a window in a grid/columns project is being dragged: the fixed slot frames, the
+    /// other windows (which shift to open a gap), and the slot currently targeted.
+    private struct TileDrag {
+        let project: Project
+        let dragged: WorkItem
+        let others: [WorkItem]
+        let slots: [NSRect]
+        var targetIndex: Int
+    }
+    private var tileDrag: TileDrag?
+
+    /// Begin a live reorder: capture the grid's slot frames and the non-dragged windows.
+    func beginTileDrag(_ item: WorkItem) {
+        guard let project = project(owning: item), project.layoutMode != .freeform else { return }
+        let placed = project.items.filter { $0.window != nil }
+        guard placed.count > 1, item.window != nil,
+              let layout = Self.tileLayout(for: project.layoutMode) else { return }
+        let slots = Self.tileFrames(placed.map { $0.window!.frame }, layout: layout)
+        tileDrag = TileDrag(project: project, dragged: item,
+                            others: placed.filter { $0 !== item }, slots: slots, targetIndex: -1)
+        updateTileDrag(item)
+    }
+
+    /// During the drag: pick the slot nearest the dragged window's center, shift the other windows to
+    /// leave that slot empty, and highlight it.
+    func updateTileDrag(_ item: WorkItem) {
+        guard var drag = tileDrag, drag.dragged === item, let f = item.window?.frame else { return }
+        let c = NSPoint(x: f.midX, y: f.midY)
+        let target = drag.slots.indices.min {
+            hypot(drag.slots[$0].midX - c.x, drag.slots[$0].midY - c.y) <
+            hypot(drag.slots[$1].midX - c.x, drag.slots[$1].midY - c.y)
+        } ?? 0
+        canvas.tileDropHighlight = drag.slots[target]
+        guard target != drag.targetIndex else { return }
+        drag.targetIndex = target
+        tileDrag = drag
+        // Fill slots in order, skipping the target slot (the gap), animating the shift.
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.16
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            var oi = 0
+            for i in drag.slots.indices where i != target {
+                guard oi < drag.others.count else { break }
+                drag.others[oi].window?.animator().frame = drag.slots[i]
+                oi += 1
+            }
+        }
+    }
+
+    /// Finish the drag (if active): commit the new order and snap onto the grid. Returns whether a
+    /// drag was handled (so the caller skips the normal move/undo path).
+    @discardableResult
+    func endTileDragIfActive(_ item: WorkItem) -> Bool {
+        guard let drag = tileDrag, drag.dragged === item else { return false }
+        tileDrag = nil
+        canvas.tileDropHighlight = nil
+        var order = drag.others
+        order.insert(drag.dragged, at: min(max(0, drag.targetIndex), order.count))
+        drag.project.items = order + drag.project.items.filter { $0.window == nil }
+        reflowIfTiled(drag.project)
+        return true
+    }
+
+    /// Reorder a tiled project's items to match where its windows currently sit (row-major:
+    /// top-to-bottom, then left-to-right). Dragging a window over another slot thus renumbers it into
+    /// that slot; a following `reflowIfTiled` snaps everything back onto the clean grid.
+    func reorderTiledByPosition(_ project: Project) {
+        guard project.layoutMode != .freeform else { return }
+        let placed = project.items.filter { $0.window != nil }
+        guard placed.count > 1 else { return }
+        let gap: CGFloat = 24
+        let avgH = placed.map { $0.window!.frame.height }.reduce(0, +) / CGFloat(placed.count)
+        let stride = max(180, avgH.rounded()) + gap                      // one grid row's height
+        let minY = placed.map { $0.window!.frame.midY }.min() ?? 0
+        func key(_ item: WorkItem) -> (Int, CGFloat) {
+            let f = item.window!.frame
+            return (Int(((f.midY - minY) / stride).rounded()), f.midX)   // (row band, x)
+        }
+        let sorted = placed.sorted { a, b in
+            let ka = key(a), kb = key(b)
+            return ka.0 != kb.0 ? ka.0 < kb.0 : ka.1 < kb.1
+        }
+        project.items = sorted + project.items.filter { $0.window == nil }
+    }
+
+    /// Re-tile a project to match its live layout mode (no undo step — used after a window is added,
+    /// removed, or moved while the project is in grid/columns mode).
+    func reflowIfTiled(_ project: Project) {
+        guard let layout = Self.tileLayout(for: project.layoutMode) else { return }
+        let items = project.items.filter { $0.window != nil }
+        guard items.count > 1 else { return }
+        let frames = Self.tileFrames(items.map { $0.window!.frame }, layout: layout)
+        for (i, item) in items.enumerated() {
+            item.window?.frame = frames[i]
+            item.window?.onGeometryChange2?()
+        }
+        canvas.needsDisplay = true
+        onModelChange?()
+        onPersistableChange?()
     }
 
     // MARK: - Projects & items
@@ -337,6 +440,7 @@ final class AppModel {
         history.register("Delete \(item.name)",
             undo: { [weak self] in box.value = self?.installItem(from: state, in: project, focus: false) },
             redo: { [weak self] in if let it = box.value { self?.performRemoveItem(it) } })
+        reflowIfTiled(project)   // live grid/columns close the gap left by the removed window
     }
 
     /// The actual teardown: remove the panel, clear selection if it was selected, reload + autosave.
@@ -387,6 +491,12 @@ final class AppModel {
         return nil
     }
 
+    /// The currently-selected project (when a folder, not an item, is selected).
+    var selectedProject: Project? {
+        if case .project(let id) = selection { return projects.first { $0.id == id } }
+        return nil
+    }
+
     /// The selected window's tab controller (browser or terminal/document container) — drives
     /// ⌘T/⌘W off the selection (the white-outlined window) rather than off keyboard focus.
     var selectedTabbable: Tabbable? { selectedItem?.tabbable }
@@ -432,17 +542,11 @@ final class AppModel {
             name = base   // no numeric suffix — items can share a name (rename to disambiguate)
         }
 
-        let wasCollapsed = project.isCollapsed
-        if wasCollapsed {               // adding content expands the folder (and unhides its windows)
-            project.isCollapsed = false
-            applyCollapse(project)
-        }
-
-        // Honor an explicit click point only for an already-expanded project (where the empty-folder
-        // spot is meaningful); a just-revealed collapsed project cascades off its existing windows.
+        // Honor an explicit click point (the empty-folder spot where the user right-clicked);
+        // otherwise cascade off the project's existing windows.
         let size = SharedCanvasLayout.defaultPanelSize
         let frame: NSRect
-        if let point, !wasCollapsed {
+        if let point {
             let origin = clampedOrigin(NSPoint(x: point.x - size.width / 2, y: point.y - size.height / 2), size: size)
             frame = NSRect(origin: origin, size: size)
         } else {
@@ -467,12 +571,20 @@ final class AppModel {
                 undo: { [weak self] in if let it = box.value { self?.performRemoveItem(it) } },
                 redo: { [weak self] in box.value = self?.installItem(from: createdState, in: project, focus: false) })
         }
+        reflowIfTiled(project)   // live grid/columns rearrange to include the new window
         return item
     }
 
-    /// Record a move/resize as one undoable step (called on drag end).
+    /// Record a move/resize as one undoable step (called on drag end). In a live-tiled project the
+    /// raw frame isn't kept: a *move* renumbers the window into the slot it was dropped on, a *resize*
+    /// just snaps back — then the project reflows onto the clean grid (no separate undo step).
     func registerGeometryChange(_ item: WorkItem?, from old: NSRect, to new: NSRect) {
         guard let item, old != new else { return }
+        if let project = project(owning: item), project.layoutMode != .freeform {
+            if old.size == new.size { reorderTiledByPosition(project) }   // a move can reorder; a resize can't
+            reflowIfTiled(project)
+            return
+        }
         history.register("Move",
             undo: { [weak item] in item?.window?.frame = old; item?.window?.onGeometryChange2?() },
             redo: { [weak item] in item?.window?.frame = new; item?.window?.onGeometryChange2?() })
@@ -562,7 +674,6 @@ final class AppModel {
     /// extend. Not undoable until `finalizeLineCreation` (it may be discarded if left empty).
     func createLine(firstNodeCanvas p: CGPoint) -> (item: WorkItem, panel: LinePanel)? {
         guard let project = currentProject ?? projects.first else { return nil }
-        if project.isCollapsed { project.isCollapsed = false; applyCollapse(project) }
         let item = installItem(in: project, kind: .line, name: "Line",
                                frame: NSRect(x: p.x, y: p.y, width: 40, height: 40),
                                contentURL: nil, documentText: nil, terminalDirectory: nil,
@@ -600,7 +711,6 @@ final class AppModel {
     /// Host a popup browser panel (created by WebKit's `createWebViewWith`) as a new item in a
     /// project, so `target="_blank"` / `window.open` open a new browser window.
     func hostBrowser(_ panel: BrowserPanel, in project: Project) {
-        if project.isCollapsed { project.isCollapsed = false }
         let item = installItem(in: project, kind: .browser, name: "Browser",
                                frame: spawnFrame(in: project),
                                contentURL: nil, documentText: nil,
@@ -673,8 +783,18 @@ final class AppModel {
             guard let self, let item else { return }
             self.renameItem(item, to: newName)
         }
+        window.onMoveBegan = { [weak self, weak item] in
+            guard let self, let item else { return }
+            self.beginTileDrag(item)
+        }
+        window.onMoveChanged = { [weak self, weak item] in
+            guard let self, let item else { return }
+            self.updateTileDrag(item)
+        }
         window.onGeometryCommitted = { [weak self, weak item] old, new in
-            self?.registerGeometryChange(item, from: old, to: new)
+            guard let self, let item else { return }
+            if self.endTileDragIfActive(item) { return }   // tiled move: committed via the live drag
+            self.registerGeometryChange(item, from: old, to: new)
         }
 
         switch kind {
@@ -874,7 +994,9 @@ final class AppModel {
         guard !captured.isEmpty else { return }
         let boxes = captured.map { _ in Box<WorkItem?>(nil) }
         let toRemove = projects.flatMap { $0.items }.filter { ids.contains($0.id) }
+        let affected = Set(captured.map { ObjectIdentifier($0.project) })
         for item in toRemove { performRemoveItem(item) }
+        for project in projects where affected.contains(ObjectIdentifier(project)) { reflowIfTiled(project) }
         // Drop focus to the canvas (not the window) so ⌘Z routes to app history rather than a stale
         // editor — and crucially keeps the split-view controller in the menu's responder chain.
         canvas.window?.makeFirstResponder(canvas)
@@ -900,7 +1022,14 @@ final class AppModel {
 
     func selectProject(_ project: Project) {
         setCurrentProject(project)
-        select(.project(project.id))
+        if selection == .project(project.id) {
+            // Already the selection (e.g. the launch default, set before the UI was wired) — `select`
+            // would short-circuit, so re-fire here to surface the project options bar.
+            applySelectionVisuals()
+            onSelectionChange?()
+        } else {
+            select(.project(project.id))
+        }
     }
 
     func selectItem(_ item: WorkItem) {
@@ -1076,7 +1205,7 @@ final class AppModel {
                 anchor = project.anchor
             }
             return ProjectState(id: project.id, name: project.name, items: items, anchor: anchor,
-                                collapsed: project.isCollapsed, colorIndex: project.colorIndex)
+                                colorIndex: project.colorIndex, tilingMode: project.layoutMode.rawValue)
         }
         return state
     }
@@ -1087,14 +1216,13 @@ final class AppModel {
         viewport = state.viewport
         for ps in state.projects {
             let project = Project(name: ps.name, id: ps.id, anchor: ps.anchor ?? .zero)
-            project.isCollapsed = ps.collapsed ?? false
             project.colorIndex = ps.colorIndex
+            project.layoutMode = ps.tilingMode.flatMap(ProjectLayoutMode.init(rawValue:)) ?? .freeform
             projects.append(project)
 
             for item in ps.items {
                 installItem(from: item, in: project, focus: false)
             }
-            applyCollapse(project)   // hide windows if the project was collapsed
         }
 
         if let id = state.currentProjectID {

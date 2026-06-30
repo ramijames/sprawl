@@ -25,8 +25,8 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 - **Diff.** Uncommitted changes (`git diff HEAD`) as a **changed-files list** (with per-file +/-
   counts on the right) beside a GitHub-style **side-by-side** diff for the selected file (old vs.
   new, red / green, wrapped, with line-number gutters).
-- **Preferences window.** Connected accounts, an undo-history limit, and your Claude API key
-  (stored in the Keychain), opened from the app menu.
+- **Preferences window.** A tabbed window (General · Account): the undo-history limit, plus the
+  Anthropic (Claude) connection status and API key (stored in the Keychain).
 - **Auto-tiling.** Arrange a project's windows into a tidy, non-overlapping layout as one undoable
   step, then pan/zoom to frame the result. Layouts: **Uniform Grid**, **2×2**, **3×3**, **Columns**,
   and **Pack** (keeps each window's size and packs them into rows). From the top-bar tile button,
@@ -43,8 +43,16 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 - **Documents are plain text** (no gutter / syntax highlighting); the dedicated Code app provides
   highlighting + line numbers.
 - **App menu** reorganized: About Sprawl · Preferences · Hide / Hide Others · Quit.
-- **Rename** items and projects by double-clicking their name (sidebar or window header); added names
-  no longer get a numeric suffix.
+- **Rename** items by double-clicking the window header (projects rename from the project options bar
+  or the sidebar); added names no longer get a numeric suffix.
+- **Projects on the canvas reworked.** Removed the folder **tab**, **collapse chevron**, and **color
+  dot** (and the collapse feature). The project name is now a **zoom-invariant white label** pinned
+  just above the folder's top-left corner — a constant on-screen size at any zoom (it lives in a
+  screen-space overlay, so it never scales during a pinch). Click a folder *or its name* to select the
+  project and show a **project options bar** to rename it, change its color, and pick a **tiling
+  mode** — **Freeform / Grid / Columns**. Grid and Columns are *live*: the project re-tiles as windows
+  are added, removed, or moved, and dragging a window opens a highlighted **placeholder gap** showing
+  where it will drop. The options bar follows the project as you drag it.
 - **Top bar + group tabs.** Replaced the macOS toolbar (and its system "glass" item grouping) and the
   bottom dock with a custom flat **top bar** (#141414, #383838 borders): a sidebar toggle, a **New
   Project** button, and a centered pill of group **tabs** — **Ideate**, **Review** (Diff / Velocity /

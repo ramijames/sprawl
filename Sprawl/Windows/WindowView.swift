@@ -84,6 +84,9 @@ final class WindowView: NSView, NSTextFieldDelegate {
     var onGeometryChange2: (() -> Void)?
     /// A move/resize drag finished — reports the before/after frame for one undoable step.
     var onGeometryCommitted: ((NSRect, NSRect) -> Void)?
+    /// A *move* drag began / updated — drives live tiling reorder (placeholder gap) in tiled projects.
+    var onMoveBegan: (() -> Void)?
+    var onMoveChanged: (() -> Void)?
     /// Double-click the header title committed a new name.
     var onRename: ((String) -> Void)?
 
@@ -376,6 +379,7 @@ final class WindowView: NSView, NSTextFieldDelegate {
         }
         dragStartMouse = superview?.convert(event.locationInWindow, from: nil) ?? .zero
         dragStartFrame = frame
+        if case .move = dragMode { onMoveBegan?() }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -395,6 +399,7 @@ final class WindowView: NSView, NSTextFieldDelegate {
                                   size: frame.size)
             frame.origin = neighborSnapOrigin(proposed)
             onGeometryChange?()
+            onMoveChanged?()
         case .resize(let edges):
             var f = dragStartFrame
             if edges.contains(.right) {

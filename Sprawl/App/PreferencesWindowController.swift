@@ -1,173 +1,199 @@
 import AppKit
 
-/// The app's Preferences window: connected accounts, undo-history limit, and the Claude API key.
+/// The app's Preferences window — a standard macOS preferences UI: a toolbar of tabs across the top
+/// (General / Account) with a tidy, grid-aligned form in each pane.
 final class PreferencesWindowController: NSWindowController {
-    private let accountsStack = NSStackView()
-    private let undoStepper = NSStepper()
-    private let undoValue = NSTextField(labelWithString: "")
-    private let keyField = NSSecureTextField()
-    private let keyStatus = NSTextField(labelWithString: "")
-
     convenience init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 440),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let tabs = PreferencesTabController()
+        let window = NSWindow(contentViewController: tabs)
         window.title = "Preferences"
+        window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
         self.init(window: window)
-        buildUI()
     }
 
     /// Show (or focus) the window, refreshing its values first.
     func present() {
-        refresh()
+        (window?.contentViewController as? PreferencesTabController)?.refreshAll()
         showWindow(nil)
         window?.center()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
+}
 
-    // MARK: - UI
+/// Hosts the preference panes as toolbar tabs (the system "preferences" chrome).
+final class PreferencesTabController: NSTabViewController {
+    private let general = GeneralPrefsViewController()
+    private let account = AccountPrefsViewController()
 
-    private func buildUI() {
-        guard let content = window?.contentView else { return }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tabStyle = .toolbar
+        view.appearance = NSAppearance(named: .darkAqua)
+        addPane(general, label: "General", symbol: "gearshape")
+        addPane(account, label: "Account", symbol: "key.fill")
+    }
 
-        let root = NSStackView(views: [
-            makeBox("Connected Accounts", accountsContent()),
-            makeBox("Undo History", undoContent()),
-            makeBox("Claude API Key", keyContent()),
-        ])
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.distribution = .fill
-        root.spacing = 16
-        root.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(root)
+    private func addPane(_ vc: NSViewController, label: String, symbol: String) {
+        let item = NSTabViewItem(viewController: vc)
+        item.label = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        addTabViewItem(item)
+    }
+
+    func refreshAll() {
+        general.refresh()
+        account.refresh()
+    }
+}
+
+// MARK: - Panes
+
+/// Shared helpers for building tidy, right-aligned label/control forms.
+private enum PrefsForm {
+    static func grid(_ rows: [[NSView]]) -> NSGridView {
+        let grid = NSGridView(views: rows)
+        grid.columnSpacing = 10
+        grid.rowSpacing = 14
+        grid.rowAlignment = .firstBaseline
+        grid.column(at: 0).xPlacement = .trailing
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        return grid
+    }
+
+    static func label(_ text: String) -> NSTextField {
+        let l = NSTextField(labelWithString: text)
+        l.font = .systemFont(ofSize: 13)
+        return l
+    }
+
+    static func hint(_ text: String) -> NSTextField {
+        let l = NSTextField(wrappingLabelWithString: text)
+        l.font = .systemFont(ofSize: 11)
+        l.textColor = .secondaryLabelColor
+        l.preferredMaxLayoutWidth = 360
+        return l
+    }
+
+    /// Pin `content` inside a sized container with standard preference margins.
+    static func pane(_ content: NSView, size: NSSize) -> NSView {
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView()
+        container.addSubview(content)
         NSLayoutConstraint.activate([
-            root.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-            root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            root.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -20),
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: 24),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
+            content.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -24),
         ])
+        container.setFrameSize(size)
+        return container
+    }
+}
+
+/// General — undo history limit.
+private final class GeneralPrefsViewController: NSViewController {
+    private let stepper = NSStepper()
+    private let valueField = NSTextField(labelWithString: "100")
+
+    override func loadView() {
+        stepper.minValue = 10
+        stepper.maxValue = 1000
+        stepper.increment = 10
+        stepper.valueWraps = false
+        stepper.target = self
+        stepper.action = #selector(stepperChanged)
+
+        valueField.alignment = .right
+        valueField.font = .systemFont(ofSize: 13, weight: .medium)
+        valueField.widthAnchor.constraint(equalToConstant: 44).isActive = true
+
+        let controls = NSStackView(views: [valueField, stepper])
+        controls.orientation = .horizontal
+        controls.spacing = 6
+
+        let grid = PrefsForm.grid([[PrefsForm.label("Maximum undo steps:"), controls]])
+        let hint = PrefsForm.hint("How many actions ⌘Z can undo. Older steps are discarded as you work.")
+
+        let stack = NSStackView(views: [grid, hint])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+
+        view = PrefsForm.pane(stack, size: NSSize(width: 480, height: 150))
+        preferredContentSize = NSSize(width: 480, height: 150)
     }
 
-    private func makeBox(_ title: String, _ inner: NSView) -> NSBox {
-        let box = NSBox()
-        box.title = title
-        box.titlePosition = .atTop
-        box.translatesAutoresizingMaskIntoConstraints = false
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        box.contentView = inner
-        return box
+    func refresh() {
+        let limit = UserDefaults.standard.integer(forKey: "SprawlUndoLimit")
+        let value = limit > 0 ? limit : 100
+        stepper.integerValue = value
+        valueField.stringValue = "\(value)"
     }
 
-    private func accountsContent() -> NSView {
-        accountsStack.orientation = .vertical
-        accountsStack.alignment = .leading
-        accountsStack.spacing = 8
-        accountsStack.translatesAutoresizingMaskIntoConstraints = false
-        accountsStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 410).isActive = true
-        return accountsStack
+    @objc private func stepperChanged() {
+        valueField.stringValue = "\(stepper.integerValue)"
+        UserDefaults.standard.set(stepper.integerValue, forKey: "SprawlUndoLimit")
     }
+}
 
-    private func undoContent() -> NSView {
-        let label = NSTextField(labelWithString: "Maximum undo steps:")
-        undoStepper.minValue = 10
-        undoStepper.maxValue = 1000
-        undoStepper.increment = 10
-        undoStepper.valueWraps = false
-        undoStepper.target = self
-        undoStepper.action = #selector(undoStepperChanged)
-        undoValue.font = .systemFont(ofSize: 13, weight: .medium)
-        undoValue.alignment = .right
-        undoValue.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        let row = NSStackView(views: [label, undoValue, undoStepper])
-        row.orientation = .horizontal
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(greaterThanOrEqualToConstant: 410).isActive = true
-        return row
-    }
+/// Account — the Anthropic (Claude) connection + API key.
+private final class AccountPrefsViewController: NSViewController {
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let keyField = NSSecureTextField()
+    private let hint = PrefsForm.hint("")
 
-    private func keyContent() -> NSView {
+    override func loadView() {
+        statusLabel.font = .systemFont(ofSize: 13, weight: .medium)
+
         keyField.placeholderString = "sk-ant-…"
-        keyField.translatesAutoresizingMaskIntoConstraints = false
+        keyField.font = .systemFont(ofSize: 13)
+        keyField.widthAnchor.constraint(equalToConstant: 300).isActive = true
+
         let save = NSButton(title: "Save", target: self, action: #selector(saveKey))
         save.bezelStyle = .rounded
         save.keyEquivalent = "\r"
         let remove = NSButton(title: "Remove", target: self, action: #selector(removeKey))
         remove.bezelStyle = .rounded
-        keyStatus.font = .systemFont(ofSize: 11)
-        keyStatus.textColor = .secondaryLabelColor
-
         let buttons = NSStackView(views: [save, remove])
         buttons.orientation = .horizontal
         buttons.spacing = 8
-        let stack = NSStackView(views: [keyField, buttons, keyStatus])
+
+        let grid = PrefsForm.grid([
+            [PrefsForm.label("Anthropic (Claude):"), statusLabel],
+            [PrefsForm.label("API Key:"), keyField],
+            [NSGridCell.emptyContentView, buttons],
+        ])
+
+        let stack = NSStackView(views: [grid, hint])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        keyField.widthAnchor.constraint(equalToConstant: 410).isActive = true
-        return stack
+        stack.spacing = 14
+
+        view = PrefsForm.pane(stack, size: NSSize(width: 480, height: 210))
+        preferredContentSize = NSSize(width: 480, height: 210)
     }
 
-    // MARK: - Values
-
-    private func refresh() {
-        let limit = UserDefaults.standard.integer(forKey: "SprawlUndoLimit")
-        let value = limit > 0 ? limit : 100
-        undoStepper.integerValue = value
-        undoValue.stringValue = "\(value)"
-
-        keyStatus.stringValue = APIKeyStore.hasKey
+    func refresh() {
+        let connected = APIKeyStore.hasKey
+        statusLabel.stringValue = connected ? "Connected" : "Not connected"
+        statusLabel.textColor = connected ? .systemGreen : .secondaryLabelColor
+        hint.stringValue = connected
             ? "A key is stored in your Keychain."
-            : "No key stored — Claude can't run without one."
-        rebuildAccounts()
-    }
-
-    private func rebuildAccounts() {
-        accountsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        accountsStack.addArrangedSubview(accountRow("Anthropic (Claude)",
-            status: APIKeyStore.hasKey ? "Connected" : "Not connected",
-            connected: APIKeyStore.hasKey))
-        accountsStack.addArrangedSubview(accountRow("Browser", status: "Per-window sign-in", connected: nil))
-    }
-
-    private func accountRow(_ name: String, status: String, connected: Bool?) -> NSView {
-        let nameLabel = NSTextField(labelWithString: name)
-        nameLabel.font = .systemFont(ofSize: 13)
-        let statusLabel = NSTextField(labelWithString: status)
-        statusLabel.font = .systemFont(ofSize: 12)
-        statusLabel.textColor = connected == true ? .systemGreen : .secondaryLabelColor
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let row = NSStackView(views: [nameLabel, spacer, statusLabel])
-        row.orientation = .horizontal
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: 410).isActive = true
-        return row
-    }
-
-    // MARK: - Actions
-
-    @objc private func undoStepperChanged() {
-        let v = undoStepper.integerValue
-        undoValue.stringValue = "\(v)"
-        UserDefaults.standard.set(v, forKey: "SprawlUndoLimit")
+            : "No key stored — Claude can't run without one. Paste your key above and click Save."
+        keyField.stringValue = ""
     }
 
     @objc private func saveKey() {
         let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
         APIKeyStore.save(key)
-        keyField.stringValue = ""
         refresh()
     }
 
     @objc private func removeKey() {
         APIKeyStore.clear()
-        keyField.stringValue = ""
         refresh()
     }
 }

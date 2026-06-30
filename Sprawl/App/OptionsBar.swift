@@ -15,8 +15,16 @@ final class OptionsBar: NSView {
     var onOpen: (() -> Void)?
     var onSave: (() -> Void)?
     var onWrap: (() -> Void)?
+    var onName: ((String) -> Void)?
+    var onLayout: ((Int) -> Void)?   // 0 = freeform, 1 = grid, 2 = columns
     var onDelete: (() -> Void)?
 
+    private let nameField = NSTextField()
+    private let layoutSegment = NSSegmentedControl(labels: ["Freeform", "Grid", "Columns"],
+                                                   trackingMode: .selectOne, target: nil, action: nil)
+    /// Which palette the color swatch + grid use (pastels for annotations/lines, the 16 project
+    /// colors for a project).
+    private var colorPalette: [NSColor] = Palette.pastels
     private let openButton = NSButton()
     private let saveButton = NSButton()
     private let wrapButton = NSButton()
@@ -124,6 +132,24 @@ final class OptionsBar: NSView {
         configureToggle(arrowEndButton, symbol: "arrow.right",
                         fallback: "chevron.right", tip: "Arrowhead at end", action: #selector(arrowEndToggled))
 
+        nameField.font = .systemFont(ofSize: 13)
+        nameField.textColor = .white
+        nameField.drawsBackground = false
+        nameField.isBordered = false
+        nameField.isBezeled = false
+        nameField.focusRingType = .none
+        nameField.usesSingleLineMode = true
+        nameField.placeholderString = "Project name"
+        nameField.target = self
+        nameField.action = #selector(nameCommitted)
+        nameField.translatesAutoresizingMaskIntoConstraints = false
+        nameField.widthAnchor.constraint(equalToConstant: 150).isActive = true
+
+        layoutSegment.target = self
+        layoutSegment.action = #selector(layoutChanged)
+        layoutSegment.controlSize = .small
+        layoutSegment.segmentDistribution = .fillEqually
+
         divider.wantsLayer = true
         divider.layer?.backgroundColor = Palette.dockBorder.cgColor
         divider.translatesAutoresizingMaskIntoConstraints = false
@@ -141,7 +167,8 @@ final class OptionsBar: NSView {
         trash.widthAnchor.constraint(equalToConstant: 24).isActive = true
 
         let stack = NSStackView(views: [openButton, saveButton, wrapButton,
-                                        repoButton, colorButton, fontPopup, sizePopup,
+                                        repoButton, nameField, colorButton, layoutSegment,
+                                        fontPopup, sizePopup,
                                         thicknessPopup, curveButton, arrowStartButton, arrowEndButton,
                                         divider, trash])
         stack.orientation = .horizontal
@@ -209,6 +236,8 @@ final class OptionsBar: NSView {
         fontPopup.isHidden = true
         sizePopup.isHidden = true
         hideLineControls()
+        hideProjectControls()
+        trash.isHidden = false
     }
 
     func setDocWrap(_ on: Bool) {
@@ -226,6 +255,9 @@ final class OptionsBar: NSView {
     /// Annotation controls: a color swatch, plus font/size dropdowns for free text.
     func configure(showsFont: Bool, colorIndex: Int, fontName: String?, fontSize: CGFloat?) {
         hideDocControls()
+        hideProjectControls()
+        trash.isHidden = false
+        colorPalette = Palette.pastels
         repoButton.isHidden = true
         colorButton.isHidden = false
         swatchLayer.backgroundColor = Palette.pastels[colorIndex % Palette.pastels.count].cgColor
@@ -241,6 +273,8 @@ final class OptionsBar: NSView {
     /// Repo-tool controls (Git Observer / Graph / Project Velocity): a repository picker.
     func configureRepo() {
         hideDocControls()
+        hideProjectControls()
+        trash.isHidden = false
         repoButton.isHidden = false
         colorButton.isHidden = true
         fontPopup.isHidden = true
@@ -252,6 +286,9 @@ final class OptionsBar: NSView {
     /// per-node while drawing with the pen tool, so there's no global curve toggle.)
     func configureLine(colorIndex: Int, thickness: CGFloat, arrowStart: Bool, arrowEnd: Bool) {
         hideDocControls()
+        hideProjectControls()
+        trash.isHidden = false
+        colorPalette = Palette.pastels
         repoButton.isHidden = true
         colorButton.isHidden = false
         swatchLayer.backgroundColor = Palette.pastels[colorIndex % Palette.pastels.count].cgColor
@@ -275,9 +312,39 @@ final class OptionsBar: NSView {
         arrowEndButton.isHidden = true
     }
 
+    private func hideProjectControls() {
+        nameField.isHidden = true
+        layoutSegment.isHidden = true
+    }
+
+    /// Project controls: a name field, a color swatch (16 project colors), and a Freeform/Grid/Columns
+    /// tiling selector. No delete (removing a whole project isn't an options-bar action).
+    func configureProject(name: String, colorIndex: Int?, layoutIndex: Int) {
+        hideDocControls()
+        repoButton.isHidden = true
+        fontPopup.isHidden = true
+        sizePopup.isHidden = true
+        hideLineControls()
+        trash.isHidden = true
+        nameField.isHidden = false
+        nameField.stringValue = name
+        layoutSegment.isHidden = false
+        layoutSegment.selectedSegment = layoutIndex
+        colorPalette = Palette.projectColors
+        colorButton.isHidden = false
+        let swatch: NSColor
+        if let ci = colorIndex, Palette.projectColors.indices.contains(ci) {
+            swatch = Palette.projectColors[ci]
+        } else {
+            swatch = NSColor(srgbRed: 0.42, green: 0.42, blue: 0.48, alpha: 1)
+        }
+        swatchLayer.backgroundColor = swatch.cgColor
+    }
+
     @objc private func colorClicked() {
-        let grid = ColorGridView(colors: Palette.pastels) { [weak self] index in
-            self?.swatchLayer.backgroundColor = Palette.pastels[index].cgColor
+        let palette = colorPalette
+        let grid = ColorGridView(colors: palette) { [weak self] index in
+            self?.swatchLayer.backgroundColor = palette[index].cgColor
             self?.onColor?(index)
             self?.popover?.close()
         }
@@ -291,6 +358,8 @@ final class OptionsBar: NSView {
         popover = pop
     }
 
+    @objc private func nameCommitted() { onName?(nameField.stringValue) }
+    @objc private func layoutChanged() { onLayout?(layoutSegment.selectedSegment) }
     @objc private func openClicked() { onOpen?() }
     @objc private func saveClicked() { onSave?() }
     @objc private func wrapClicked() { onWrap?() }

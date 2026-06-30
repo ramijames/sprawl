@@ -58,10 +58,15 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   that has a Git widget, it inherits that repo's branch, status, and recent commits as context. A
   **chat-bubble** UI (Send nested in the input) with project-aware starter prompts; the API key is
   stored in the macOS Keychain. See [`dev-docs/claude-integration-spec.md`](dev-docs/claude-integration-spec.md).
-- **Projects on one shared canvas** — every project is a labeled "folder" card that wraps its
-  own windows; they're laid out spatially across the same surface, not hidden behind tabs.
-  Click a project in the sidebar to pan/zoom straight to it. Double-click a folder's tab to
-  rename it.
+- **Projects on one shared canvas** — every project is a rounded "folder" card that wraps its own
+  windows, laid out spatially across the same surface (not hidden behind tabs). Its name is a
+  **zoom-invariant white label** above the top-left corner (constant size at any zoom). Click a folder
+  (or its name) to select the project and open a **project options bar** to rename it, set its color,
+  and choose a **tiling mode** (Freeform / Grid / Columns). Click a project in the sidebar to pan/zoom
+  straight to it; drag a folder to move the whole project.
+- **Live tiling** — set a project to **Grid** or **Columns** and it stays tidy on its own: it
+  re-tiles whenever a window is added, removed, or moved, and dragging a window opens a highlighted
+  **placeholder** showing the slot it'll drop into (Freeform leaves windows wherever you put them).
 - **Selection** — a white outline shows what's selected; **Shift-click** to select multiple items
   at once (then DELETE removes the group, ESC deselects). DELETE removes the selection; **⌘Z / ⇧⌘Z**
   undo / redo create, delete, move/resize, and annotation edits.
@@ -77,7 +82,7 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
 - **Persistent workspace** — close the app and reopen it to find everything exactly where you
   left it (see [Persistence](#persistence)).
 - **Dark, terminal-like UI** — chrome-less window with a custom flat top bar, dark vibrancy
-  sidebar, and each project drawn as a "folder" card with its name on a top-left tab.
+  sidebar, and each project drawn as a "folder" card with its name pinned above its top-left corner.
 
 ---
 
@@ -175,10 +180,11 @@ button, the keyboard, or by **right-clicking the canvas**:
 
 **Selecting & renaming**
 
-- Click empty canvas to select nothing, a **folder** to select that project, or a
-  **window/terminal** to select that item — the selection shows as a single white outline.
-- Click a project in the **sidebar** to pan/zoom straight to it. **Double-click a folder tab**
-  to rename it (Return commits, Esc / clicking away cancels).
+- Click empty canvas to select nothing, a **folder** (or its name) to select that project — which
+  opens its **options bar** (rename / color / tiling) — or a **window/terminal** to select that item.
+  The selection shows as a single white outline.
+- Click a project in the **sidebar** to pan/zoom straight to it. Rename a project from its **options
+  bar** or by double-clicking it in the sidebar.
 
 **Canvas navigation**
 

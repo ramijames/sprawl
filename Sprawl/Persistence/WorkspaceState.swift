@@ -42,9 +42,12 @@ struct ProjectState: Codable {
     /// Content-region top-left in shared-canvas coords; authoritative for empty folders and the
     /// spawn seed for the project's first window.
     var anchor: CGPoint?
-    /// Collapsed state and accent color index (into Palette.projectColors).
+    /// Accent color index (into Palette.projectColors). `collapsed` is legacy (the feature was
+    /// removed) — kept only so older workspaces still decode.
     var collapsed: Bool?
     var colorIndex: Int?
+    /// Live tiling mode raw value ("freeform" / "grid" / "columns").
+    var tilingMode: String?
 
     // Legacy v1 per-project viewport — optional, read only during migration; v2 writes omit them.
     var magnification: CGFloat?

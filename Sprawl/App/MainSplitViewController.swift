@@ -9,6 +9,7 @@ final class MainSplitViewController: NSSplitViewController {
     private let annotateDock = NSView()        // small right-edge pill: Sticky / Text / Arrow
     private let optionsBar = OptionsBar(frame: .zero)
     private weak var optionsBarWindow: WindowView?
+    private weak var optionsBarProject: Project?   // set instead of optionsBarWindow for a project
 
     // Top-bar group tabs (each opens a custom dropdown of tools) + click-to-place state.
     private weak var snapButton: NSButton?
@@ -481,9 +482,14 @@ final class MainSplitViewController: NSSplitViewController {
     /// or hide it.
     private func updateOptionsBar() {
         optionsBarWindow?.onGeometryChange2 = nil
+        optionsBarProject = nil
         if model.isMultiSelect {   // multi-selection only supports Delete / Escape — no options bar
             optionsBar.isHidden = true
             optionsBarWindow = nil
+            return
+        }
+        if let project = model.selectedProject {   // a folder is selected — show its options bar
+            configureProjectOptionsBar(project)
             return
         }
         let repoKinds: Set<WorkItem.Kind> = [.gitObserver, .gitGraph, .projectVelocity, .codeEditor, .diff]
@@ -543,14 +549,45 @@ final class MainSplitViewController: NSSplitViewController {
         positionOptionsBar()
     }
 
+    /// Configure + show the options bar for a selected project (name / color / tiling).
+    private func configureProjectOptionsBar(_ project: Project) {
+        let layoutIndex: Int
+        switch project.layoutMode {
+        case .freeform: layoutIndex = 0
+        case .grid: layoutIndex = 1
+        case .columns: layoutIndex = 2
+        }
+        optionsBar.configureProject(name: project.name, colorIndex: project.colorIndex, layoutIndex: layoutIndex)
+        optionsBar.onName = { [weak self] name in self?.model.renameProject(project, to: name) }
+        optionsBar.onColor = { [weak self] index in self?.model.setProjectColor(project, index) }
+        optionsBar.onLayout = { [weak self] idx in
+            let mode: ProjectLayoutMode = idx == 1 ? .grid : (idx == 2 ? .columns : .freeform)
+            self?.model.setProjectLayout(project, mode)
+        }
+        optionsBar.isHidden = false
+        optionsBarProject = project
+        optionsBarWindow = nil
+        positionOptionsBar()
+    }
+
     private func positionOptionsBar() {
-        guard !optionsBar.isHidden, let window = optionsBarWindow else { return }
+        guard !optionsBar.isHidden else { return }
         optionsBar.layoutSubtreeIfNeeded()
         let size = optionsBar.fittingSize
-        let rect = canvasVC.view.convert(window.bounds, from: window)
+        let originX: CGFloat
+        let rect: NSRect
+        if let project = optionsBarProject {
+            rect = canvasVC.view.convert(model.canvas.folderBounds(for: project), from: model.canvas)
+            originX = rect.minX   // left-aligned with the project's name label
+        } else if let window = optionsBarWindow {
+            rect = canvasVC.view.convert(window.bounds, from: window)
+            originX = rect.midX - size.width / 2
+        } else {
+            return
+        }
         let y = canvasVC.view.isFlipped ? rect.minY - size.height - 8 : rect.maxY + 8
         optionsBar.setFrameSize(size)
-        optionsBar.setFrameOrigin(NSPoint(x: rect.midX - size.width / 2, y: y))
+        optionsBar.setFrameOrigin(NSPoint(x: originX, y: y))
     }
 
     /// Create an item in the focused project and pan the canvas to it (dock affordance).
@@ -784,6 +821,9 @@ final class MainSplitViewController: NSSplitViewController {
             self?.model.onPersistableChange?()
             self?.positionOptionsBar()
         }
+        // Keep the options bar pinned to its window/project as the canvas repaints (e.g. dragging a
+        // whole project around moves its folder).
+        canvasVC.onCanvasRedraw = { [weak self] in self?.positionOptionsBar() }
     }
 
     // MARK: - Menu / toolbar actions (reached through the responder chain or directly)

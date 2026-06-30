@@ -5,9 +5,12 @@ import AppKit
 final class CanvasViewController: NSViewController {
     private let model: AppModel
     private let scrollView = CanvasScrollView()
+    private let titles = ProjectTitlesView()   // screen-space project name labels (zoom-invariant)
 
     /// The canvas was panned or zoomed — request an autosave of the viewport.
     var onViewportChange: (() -> Void)?
+    /// The canvas repainted (folder moved / added / removed) — reposition floating chrome.
+    var onCanvasRedraw: (() -> Void)?
 
     init(model: AppModel) {
         self.model = model
@@ -28,7 +31,39 @@ final class CanvasViewController: NSViewController {
         ])
         model.canvas.frame = NSRect(origin: .zero, size: CanvasView.canvasSize)
         scrollView.documentView = model.canvas
+        installTitlesOverlay()
+        scrollView.onLiveZoomCommitted = { [weak self] in self?.onViewportChange?(); self?.refreshTitles() }
+        scrollView.onLiveZoomBegan = { [weak self] anchor in self?.titles.beginLiveZoom(anchorCanvas: anchor) }
+        scrollView.onLiveZoomChanged = { [weak self] scale in self?.titles.updateLiveZoom(scale: scale) }
         observeViewport()
+    }
+
+    /// The screen-space project-title overlay sits above the scroll view (so labels never zoom) but
+    /// passes mouse events through. It re-syncs whenever the canvas repaints (folder added / moved /
+    /// renamed) and repositions on every viewport change.
+    private func installTitlesOverlay() {
+        titles.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(titles)
+        NSLayoutConstraint.activate([
+            titles.topAnchor.constraint(equalTo: view.topAnchor),
+            titles.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            titles.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            titles.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        titles.convertFromCanvas = { [weak self] point in
+            guard let self else { return point }
+            return self.titles.convert(point, from: self.model.canvas)
+        }
+        titles.cornerProvider = { [weak self] id in
+            guard let self, let project = self.model.projects.first(where: { $0.id == id }) else { return nil }
+            return self.model.canvas.folderTopLeft(for: project)
+        }
+        model.canvas.onDidDraw = { [weak self] in self?.refreshTitles(); self?.onCanvasRedraw?() }
+        refreshTitles()
+    }
+
+    private func refreshTitles() {
+        titles.sync(model.projects.map { (id: $0.id, name: $0.name) })
     }
 
     /// Apply the saved global viewport on launch, or center on the canvas if none.
@@ -146,11 +181,11 @@ final class CanvasViewController: NSViewController {
                            name: NSScrollView.didEndLiveMagnifyNotification, object: scrollView)
     }
 
-    @objc private func viewportChanged() { onViewportChange?() }
+    @objc private func viewportChanged() { titles.reposition(); onViewportChange?() }
 
     // MARK: - Zoom (forwarded from menu via MainSplitViewController)
 
-    func zoomIn() { scrollView.zoomIn(); onViewportChange?() }
-    func zoomOut() { scrollView.zoomOut(); onViewportChange?() }
-    func zoomReset() { scrollView.zoomReset(); onViewportChange?() }
+    func zoomIn() { scrollView.zoomIn(); model.canvas.needsDisplay = true; onViewportChange?() }
+    func zoomOut() { scrollView.zoomOut(); model.canvas.needsDisplay = true; onViewportChange?() }
+    func zoomReset() { scrollView.zoomReset(); model.canvas.needsDisplay = true; onViewportChange?() }
 }

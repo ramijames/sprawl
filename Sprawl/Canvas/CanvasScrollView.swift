@@ -38,6 +38,13 @@ final class CanvasScrollView: NSScrollView {
         super.scrollWheel(with: event)
     }
 
+    /// Called once a pinch/⌘-scroll zoom settles into a real magnification (so the canvas can
+    /// re-rasterize zoom-invariant content like project titles and reposition overlays).
+    var onLiveZoomCommitted: (() -> Void)?
+    /// A live zoom began at `anchor` (document coords) — capture base positions for screen-space overlays.
+    var onLiveZoomBegan: ((NSPoint) -> Void)?
+    /// The live zoom's scale relative to its start — drive screen-space overlay tracking each frame.
+    var onLiveZoomChanged: ((CGFloat) -> Void)?
     private var zoomSettleTimer: Timer?
     private var liveZoom = false
     private var liveZoomBaseMag: CGFloat = 1
@@ -81,12 +88,14 @@ final class CanvasScrollView: NSScrollView {
         liveZoomBaseMag = magnification
         liveZoomTargetMag = magnification
         liveZoomAnchor = anchor
+        onLiveZoomBegan?(anchor)
     }
 
     private func updateLiveZoom(factor: CGFloat) {
         guard liveZoom, let layer = documentView?.layer else { return }
         liveZoomTargetMag = clamped(liveZoomTargetMag * factor)
         let scale = liveZoomTargetMag / liveZoomBaseMag
+        onLiveZoomChanged?(scale)
         // Scale about the anchor regardless of the layer's anchorPoint: q' = pivot + L(q - pivot),
         // so to keep `anchor` fixed we translate by (anchor - pivot)(1 - scale) before scaling.
         let bounds = layer.bounds.size
@@ -113,6 +122,8 @@ final class CanvasScrollView: NSScrollView {
         document.layer?.transform = CATransform3DIdentity   // drop the visual transform…
         setMagnification(finalMag, centeredAt: anchor)       // …and make the same scale real
         CATransaction.commit()
+        document.needsDisplay = true                         // repaint titles at the new scale now
+        onLiveZoomCommitted?()
     }
 
     func zoomIn() { setMagnification(clamped(magnification * 1.25), centeredAt: viewportCenterInDocument()) }

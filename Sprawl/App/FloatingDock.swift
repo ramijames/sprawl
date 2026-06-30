@@ -20,7 +20,6 @@ final class FloatingDock: NSView {
     var onNewProjectVelocity: (() -> Void)?
     var onNewDiff: (() -> Void)?
     var onNewCodeEditor: (() -> Void)?
-    var onNewFigma: (() -> Void)?
     var onNewClaude: (() -> Void)?
     var onNewSticky: (() -> Void)?
     var onNewFreeText: (() -> Void)?
@@ -76,7 +75,6 @@ final class FloatingDock: NSView {
             return [DockTool(icon: LucideIcon.squareTerminal, tooltip: "Terminal") { self.onNewTerminal?() },
                     DockTool(icon: LucideIcon.fileText, tooltip: "Document") { self.onNewDocument?() },
                     DockTool(icon: LucideIcon.code, tooltip: "Code") { self.onNewCodeEditor?() },
-                    DockTool(icon: LucideIcon.figma, tooltip: "Figma") { self.onNewFigma?() },
                     DockTool(icon: LucideIcon.globe, tooltip: "Browser") { self.onNewBrowser?() },
                     DockTool(icon: LucideIcon.sparkles, tooltip: "Claude") { self.onNewClaude?() }]
         }
@@ -166,6 +164,53 @@ final class SubDock: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }
 
+/// One row of a top-bar group dropdown: a left icon, a small gap, then the tool's name. Highlights
+/// on hover; runs its action on click.
+final class DropdownRow: NSButton {
+    private let onClick: () -> Void
+    private var trackingArea: NSTrackingArea?
+
+    init(icon: [LucideIcon.Shape], label: String, action: @escaping () -> Void) {
+        onClick = action
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        isBordered = false
+        bezelStyle = .regularSquare
+        image = LucideIcon.image(icon, size: 18, color: Palette.dockIcon)
+        imagePosition = .imageLeft
+        imageHugsTitle = true
+        alignment = .left
+        contentTintColor = Palette.dockIcon
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        attributedTitle = NSAttributedString(string: "  " + label, attributes: [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: Palette.dockIcon,
+            .paragraphStyle: paragraph,
+        ])
+        target = self
+        self.action = #selector(clicked)
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 32).isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    @objc private func clicked() { onClick() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = Palette.dockHover.cgColor }
+    override func mouseExited(with event: NSEvent) { layer?.backgroundColor = NSColor.clear.cgColor }
+}
+
 /// A square icon button with a rounded hover highlight, for the floating dock.
 final class DockButton: NSButton {
     private let onClick: () -> Void
@@ -173,13 +218,26 @@ final class DockButton: NSButton {
     private var isActive = false
 
     init(icon: [LucideIcon.Shape], tooltip: String, label: String? = nil,
-         caret: Bool = false, action: @escaping () -> Void) {
+         caret: Bool = false, compact: Bool = false,
+         compactIcon: CGFloat = 22, compactSize: CGFloat = 38, action: @escaping () -> Void) {
         onClick = action
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 9
         isBordered = false
         bezelStyle = .regularSquare
+        toolTip = tooltip
+        target = self
+        self.action = #selector(clicked)
+        translatesAutoresizingMaskIntoConstraints = false
+        if compact {
+            // Small icon-only button (the right-edge Annotate dock; the group drawer uses a larger glyph).
+            image = LucideIcon.image(icon, size: compactIcon, color: Palette.dockIcon)
+            imagePosition = .imageOnly
+            widthAnchor.constraint(equalToConstant: compactSize).isActive = true
+            heightAnchor.constraint(equalToConstant: compactSize).isActive = true
+            return
+        }
         image = DockButton.paddedIcon(icon, bottomPad: 7)   // transparent strip = gap above the caption
         imagePosition = .imageAbove   // icon on top, small caption below
         imageHugsTitle = true
@@ -190,10 +248,6 @@ final class DockButton: NSButton {
             .foregroundColor: Palette.dockIcon.withAlphaComponent(0.35),
             .paragraphStyle: caption,
         ])
-        toolTip = tooltip
-        target = self
-        self.action = #selector(clicked)
-        translatesAutoresizingMaskIntoConstraints = false
         widthAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
         heightAnchor.constraint(equalToConstant: 54).isActive = true
     }

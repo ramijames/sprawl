@@ -33,7 +33,6 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor)) and autosave to disk.
 - **Diff** — see uncommitted changes (`git diff HEAD`) as a **changed-files list** (with per-file
   +/- counts) beside a GitHub-style **side-by-side** diff for the selected file.
-- **Figma** — wrap the Figma web app in a panel so a file lives right on the canvas.
 - **Annotations** — **sticky notes**, **free text**, and **lines / connectors** (orthogonal "elbow"
   routing with rounded corners and arrowheads), all with a floating **options bar** for color,
   thickness, font, and arrowheads.
@@ -63,16 +62,18 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
 - **Selection** — a white outline shows what's selected; **Shift-click** to select multiple items
   at once (then DELETE removes the group, ESC deselects). DELETE removes the selection; **⌘Z / ⇧⌘Z**
   undo / redo create, delete, move/resize, and annotation edits.
-- **Floating dock** — a rounded toolbar pinned to the bottom-center of the canvas (Lucide icons): a
-  standalone **New Project** button plus discrete groups — **Ideate**, **Annotate** (Sticky / Text /
-  Arrow), **Review** (Diff / Velocity / Observer / Graph), **Create** (Terminal / Document / Code /
-  Figma / Browser / Claude), and **Manage**. Clicking a group opens a custom **sub-dock** above the
-  dock; picking a tool arms it and places the item **where you next click on the canvas**.
+- **Top bar + group tabs** — a custom flat top bar (Lucide icons): a sidebar toggle, a standalone
+  **New Project** button, and a centered pill of group **tabs** — **Ideate**, **Review** (Diff /
+  Velocity / Observer / Graph), **Create** (Terminal / Document / Code / Browser / Claude), and
+  **Manage**. Clicking a tab opens a **custom dropdown** of its tools (icon + name) beneath it;
+  picking one arms it and places the item **where you next click on the canvas**. **Annotate** tools
+  (Sticky / Text / Arrow) live in a small dock on the right edge; undo / redo and the snap toggle sit
+  at the right of the bar.
 - **Right-click** — empty canvas to make a project where you click; empty space inside a folder to
-  add any tool (terminal, document, code, figma, browser, git widgets, diff, annotations, …) to it.
+  add any tool (terminal, document, code, browser, git widgets, diff, annotations, …) to it.
 - **Persistent workspace** — close the app and reopen it to find everything exactly where you
   left it (see [Persistence](#persistence)).
-- **Dark, terminal-like UI** — chrome-less window with a unified toolbar, dark vibrancy
+- **Dark, terminal-like UI** — chrome-less window with a custom flat top bar, dark vibrancy
   sidebar, and each project drawn as a "folder" card with its name on a top-left tab.
 
 ---
@@ -138,7 +139,7 @@ Then rebuild. (Prefer to manage sizes by hand? Drop the individually named PNGs 
 
 ## Usage
 
-Create terminals, documents, and projects from the **floating dock**, the sidebar **+**
+Create terminals, documents, and projects from the **top bar's group tabs**, the sidebar **+**
 button, the keyboard, or by **right-clicking the canvas**:
 
 | Action          | Shortcut |

@@ -7,7 +7,6 @@ final class WorkItem {
         case terminal
         case document
         case codeEditor
-        case figma
         case browser
         case gitObserver
         case gitGraph
@@ -23,7 +22,6 @@ final class WorkItem {
             case .terminal: return "terminal"
             case .document: return "doc.text"
             case .codeEditor: return "chevron.left.forwardslash.chevron.right"
-            case .figma: return "pencil.and.outline"
             case .browser: return "globe"
             case .gitObserver: return "chart.bar.xaxis"
             case .gitGraph: return "point.3.connected.trianglepath.dotted"
@@ -66,8 +64,6 @@ final class WorkItem {
     var line: LinePanel?
     /// Native code editor over a repo file tree.
     var codeEditor: CodeEditorPanel?
-    /// Figma web app wrapped in a web view.
-    var figma: FigmaPanel?
     /// True once the user has manually renamed this item — suppresses auto-title updates (page
     /// title, repo name, active-tab title) so the chosen name sticks.
     var userRenamed = false
@@ -408,7 +404,6 @@ final class AppModel {
             case .terminal: base = "Terminal"
             case .document: base = "Document"
             case .codeEditor: base = "Code"
-            case .figma: base = "Figma"
             case .browser: base = "Browser"
             case .gitObserver: base = "Git Observer"
             case .gitGraph: base = "Git Graph"
@@ -632,11 +627,6 @@ final class AppModel {
             }
             if focus { panel.focus() }
             item.codeEditor = panel
-        case .figma:
-            let panel = FigmaPanel()
-            panel.attach(to: window)
-            if focus { panel.focus() }
-            item.figma = panel
         case .browser:
             let panel: BrowserPanel
             if let browserPanel {
@@ -878,7 +868,6 @@ final class AppModel {
         case .terminal: kindState = .terminal
         case .document: kindState = .document
         case .codeEditor: kindState = .codeEditor
-        case .figma: kindState = .figma
         case .browser: kindState = .browser
         case .gitObserver: kindState = .gitObserver
         case .gitGraph: kindState = .gitGraph
@@ -947,7 +936,7 @@ final class AppModel {
         case .terminal: kind = .terminal; contentURL = nil
         case .document: kind = .document; contentURL = item.filePath.map { URL(fileURLWithPath: $0) }
         case .codeEditor: kind = .codeEditor; contentURL = item.workingDirectory.map { URL(fileURLWithPath: $0) }
-        case .figma: kind = .figma; contentURL = nil
+        case .figma: return nil   // the Figma app was removed; drop any saved figma windows
         case .files: return nil   // the Files app was removed; drop any saved files windows
         case .gitObserver: kind = .gitObserver; contentURL = item.workingDirectory.map { URL(fileURLWithPath: $0) }
         case .gitGraph: kind = .gitGraph; contentURL = item.workingDirectory.map { URL(fileURLWithPath: $0) }

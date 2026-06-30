@@ -334,7 +334,6 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             menu.addItem(withTitle: "New Terminal", action: #selector(contextNewTerminal), keyEquivalent: "")
             menu.addItem(withTitle: "New Document", action: #selector(contextNewDocument), keyEquivalent: "")
             menu.addItem(withTitle: "New Code Editor", action: #selector(contextNewCodeEditor), keyEquivalent: "")
-            menu.addItem(withTitle: "New Figma", action: #selector(contextNewFigma), keyEquivalent: "")
             menu.addItem(withTitle: "New Browser", action: #selector(contextNewBrowser), keyEquivalent: "")
             menu.addItem(withTitle: "New Git Observer", action: #selector(contextNewGitObserver), keyEquivalent: "")
             menu.addItem(withTitle: "New Git Graph", action: #selector(contextNewGitGraph), keyEquivalent: "")
@@ -356,7 +355,6 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     @objc private func contextNewTerminal() { createContextItem(.terminal) }
     @objc private func contextNewDocument() { createContextItem(.document) }
     @objc private func contextNewCodeEditor() { createContextItem(.codeEditor) }
-    @objc private func contextNewFigma() { createContextItem(.figma) }
     @objc private func contextNewBrowser() { createContextItem(.browser) }
     @objc private func contextNewGitObserver() { createContextItem(.gitObserver) }
     @objc private func contextNewGitGraph() { createContextItem(.gitGraph) }

@@ -36,5 +36,14 @@ enum APIKeyStore {
         SecItemAdd(add as CFDictionary, nil)
     }
 
+    static func clear() {
+        let base: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(base as CFDictionary)
+    }
+
     static var hasKey: Bool { load() != nil }
 }

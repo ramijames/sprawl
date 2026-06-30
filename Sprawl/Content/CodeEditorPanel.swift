@@ -77,18 +77,41 @@ private struct CodeEditorBody: View {
 
 /// A repo-oriented code editor: pick a repository, browse its file tree, and edit files in a native
 /// source editor (syntax highlighting + line numbers). Edits autosave to disk.
-final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSMenuDelegate {
+final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate,
+                             NSMenuDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    private enum Mode { case explorer, search }
+
     let containerView = NSView()
     private let outline = NSOutlineView()
     private let treeScroll = NSScrollView()
     private let emptyState = NSStackView()
     private let divider = NSView()
+
+    // Activity bar (left icon rail) + the swappable left panel (Explorer / Search).
+    private let activityBar = NSView()
+    private let panelContainer = NSView()
+    private var explorerButton: NSButton?
+    private var searchButton: NSButton?
+    private var mode: Mode = .explorer
+
+    // Search panel.
+    private let searchPane = NSView()
+    private let searchField = NSTextField()
+    private let searchTable = NSTableView()
+    private let searchScroll = NSScrollView()
+    private struct SearchHit { let url: URL; let line: Int; let text: String }
+    private var searchResults: [SearchHit] = []
     private let editorModel = CodeFileModel()
     private lazy var hostingView = NSHostingView(rootView: CodeFileEditorView(model: editorModel))
 
     private var rootNodes: [FileNode] = []
     private(set) var repoPath: String?
+    private var gitStatus: [String: (letter: String, color: NSColor)] = [:]   // repo-relative path → status
     private var loadingFile = false
+
+    private static let modifiedColor = NSColor(srgbRed: 0.89, green: 0.75, blue: 0.55, alpha: 1)   // yellow
+    private static let addedColor = NSColor(srgbRed: 0.45, green: 0.78, blue: 0.57, alpha: 1)       // green
+    private static let deletedColor = NSColor(srgbRed: 0.86, green: 0.46, blue: 0.46, alpha: 1)     // red
     private var textObserver: AnyCancellable?
     private var saveWork: DispatchWorkItem?
 
@@ -154,6 +177,22 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
 
         hostingView.translatesAutoresizingMaskIntoConstraints = false
 
+        buildActivityBar()
+        buildSearchPane()
+
+        // The left panel container hosts either the Explorer tree or the Search pane.
+        panelContainer.translatesAutoresizingMaskIntoConstraints = false
+        panelContainer.addSubview(treeScroll)
+        panelContainer.addSubview(searchPane)
+        for v in [treeScroll, searchPane] {
+            NSLayoutConstraint.activate([
+                v.topAnchor.constraint(equalTo: panelContainer.topAnchor),
+                v.bottomAnchor.constraint(equalTo: panelContainer.bottomAnchor),
+                v.leadingAnchor.constraint(equalTo: panelContainer.leadingAnchor),
+                v.trailingAnchor.constraint(equalTo: panelContainer.trailingAnchor),
+            ])
+        }
+
         let emptyIcon = NSImageView()
         emptyIcon.image = LucideIcon.image(LucideIcon.code, size: 56, color: NSColor(white: 1, alpha: 0.16))
         let emptyButton = NSButton(title: "Select Repository", target: self, action: #selector(chooseFolder))
@@ -166,7 +205,8 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         emptyState.addArrangedSubview(emptyIcon)
         emptyState.addArrangedSubview(emptyButton)
 
-        containerView.addSubview(treeScroll)
+        containerView.addSubview(activityBar)
+        containerView.addSubview(panelContainer)
         containerView.addSubview(divider)
         containerView.addSubview(hostingView)
         containerView.addSubview(emptyState)
@@ -175,12 +215,17 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
             emptyState.centerXAnchor.constraint(equalTo: containerView.centerXAnchor),
             emptyState.centerYAnchor.constraint(equalTo: containerView.centerYAnchor),
 
-            treeScroll.topAnchor.constraint(equalTo: containerView.topAnchor),
-            treeScroll.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
-            treeScroll.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-            treeScroll.widthAnchor.constraint(equalToConstant: 220),
+            activityBar.topAnchor.constraint(equalTo: containerView.topAnchor),
+            activityBar.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            activityBar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            activityBar.widthAnchor.constraint(equalToConstant: 44),
 
-            divider.leadingAnchor.constraint(equalTo: treeScroll.trailingAnchor),
+            panelContainer.topAnchor.constraint(equalTo: containerView.topAnchor),
+            panelContainer.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            panelContainer.leadingAnchor.constraint(equalTo: activityBar.trailingAnchor),
+            panelContainer.widthAnchor.constraint(equalToConstant: 220),
+
+            divider.leadingAnchor.constraint(equalTo: panelContainer.trailingAnchor),
             divider.topAnchor.constraint(equalTo: containerView.topAnchor),
             divider.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
             divider.widthAnchor.constraint(equalToConstant: 1),
@@ -190,13 +235,181 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
             hostingView.topAnchor.constraint(equalTo: containerView.topAnchor),
             hostingView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
         ])
+        setMode(.explorer)
         updateEmptyState()
     }
 
     private func updateEmptyState() {
         let hasRepo = repoPath != nil
         emptyState.isHidden = hasRepo
-        for view in [treeScroll, divider, hostingView] { view.isHidden = !hasRepo }
+        for view in [activityBar, panelContainer, divider, hostingView] { view.isHidden = !hasRepo }
+    }
+
+    // MARK: - Activity bar + Search
+
+    private func buildActivityBar() {
+        activityBar.wantsLayer = true
+        activityBar.layer?.backgroundColor = NSColor(white: 0, alpha: 0.18).cgColor
+        activityBar.translatesAutoresizingMaskIntoConstraints = false
+
+        func barButton(_ symbol: String, _ tip: String, action: Selector) -> NSButton {
+            let b = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: tip) ?? NSImage(),
+                             target: self, action: action)
+            b.isBordered = false
+            b.imagePosition = .imageOnly
+            b.toolTip = tip
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 36).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 36).isActive = true
+            return b
+        }
+        let explorer = barButton("doc.on.doc", "Explorer", action: #selector(showExplorer))
+        let search = barButton("magnifyingglass", "Search", action: #selector(showSearch))
+        explorerButton = explorer
+        searchButton = search
+        let stack = NSStackView(views: [explorer, search])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 4
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        activityBar.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: activityBar.topAnchor, constant: 8),
+            stack.centerXAnchor.constraint(equalTo: activityBar.centerXAnchor),
+        ])
+        updateActivityHighlight()
+    }
+
+    private func buildSearchPane() {
+        searchPane.translatesAutoresizingMaskIntoConstraints = false
+
+        searchField.placeholderString = "Search"
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.target = self
+        searchField.action = #selector(runSearch)   // fires on Enter
+
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hit"))
+        col.resizingMask = .autoresizingMask
+        searchTable.addTableColumn(col)
+        searchTable.headerView = nil
+        searchTable.backgroundColor = .clear
+        searchTable.rowHeight = 34
+        searchTable.dataSource = self
+        searchTable.delegate = self
+        searchTable.target = self
+        searchTable.action = #selector(searchResultClicked)
+        searchTable.focusRingType = .none
+        searchScroll.documentView = searchTable
+        searchScroll.drawsBackground = false
+        searchScroll.hasVerticalScroller = true
+        searchScroll.scrollerStyle = .overlay
+        searchScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        searchPane.addSubview(searchField)
+        searchPane.addSubview(searchScroll)
+        NSLayoutConstraint.activate([
+            searchField.topAnchor.constraint(equalTo: searchPane.topAnchor, constant: 10),
+            searchField.leadingAnchor.constraint(equalTo: searchPane.leadingAnchor, constant: 8),
+            searchField.trailingAnchor.constraint(equalTo: searchPane.trailingAnchor, constant: -8),
+            searchScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+            searchScroll.leadingAnchor.constraint(equalTo: searchPane.leadingAnchor),
+            searchScroll.trailingAnchor.constraint(equalTo: searchPane.trailingAnchor),
+            searchScroll.bottomAnchor.constraint(equalTo: searchPane.bottomAnchor),
+        ])
+    }
+
+    @objc private func showExplorer() { setMode(.explorer) }
+    @objc private func showSearch() { setMode(.search); searchPane.window?.makeFirstResponder(searchField) }
+
+    private func setMode(_ m: Mode) {
+        mode = m
+        treeScroll.isHidden = m != .explorer
+        searchPane.isHidden = m != .search
+        updateActivityHighlight()
+    }
+
+    private func updateActivityHighlight() {
+        explorerButton?.contentTintColor = mode == .explorer ? .controlAccentColor : .secondaryLabelColor
+        searchButton?.contentTintColor = mode == .search ? .controlAccentColor : .secondaryLabelColor
+    }
+
+    // MARK: - Search (find across the repo)
+
+    @objc private func runSearch() {
+        let query = searchField.stringValue
+        guard let repoPath, !query.isEmpty else { searchResults = []; searchTable.reloadData(); return }
+        let root = URL(fileURLWithPath: repoPath)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let hits = CodeEditorPanel.search(query, in: root)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.searchResults = hits
+                self.searchTable.reloadData()
+            }
+        }
+    }
+
+    /// Case-insensitive substring search across the repo's text files (capped for responsiveness).
+    private static func search(_ query: String, in root: URL) -> [SearchHit] {
+        let skip: Set<String> = [".git", ".DS_Store", "node_modules", ".build", "DerivedData", ".next", "dist"]
+        let needle = query.lowercased()
+        var hits: [SearchHit] = []
+        let fm = FileManager.default
+        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey],
+                                     options: [.skipsHiddenFiles]) else { return [] }
+        for case let url as URL in en {
+            if skip.contains(url.lastPathComponent) { en.skipDescendants(); continue }
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            guard size <= 2_000_000, let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            var lineNo = 0
+            for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+                lineNo += 1
+                if line.lowercased().contains(needle) {
+                    hits.append(SearchHit(url: url, line: lineNo,
+                                          text: line.trimmingCharacters(in: .whitespaces)))
+                    if hits.count >= 500 { return hits }
+                }
+            }
+        }
+        return hits
+    }
+
+    @objc private func searchResultClicked() {
+        let row = searchTable.clickedRow >= 0 ? searchTable.clickedRow : searchTable.selectedRow
+        guard searchResults.indices.contains(row) else { return }
+        openFile(searchResults[row].url)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { searchResults.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let hit = searchResults[row]
+        let id = NSUserInterfaceItemIdentifier("SearchHitCell")
+        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView) ?? {
+            let c = NSTableCellView(); c.identifier = id
+            let loc = NSTextField(labelWithString: ""); loc.translatesAutoresizingMaskIntoConstraints = false
+            loc.font = .systemFont(ofSize: 10); loc.textColor = .secondaryLabelColor
+            loc.lineBreakMode = .byTruncatingHead; loc.tag = 1
+            let txt = NSTextField(labelWithString: ""); txt.translatesAutoresizingMaskIntoConstraints = false
+            txt.font = .monospacedSystemFont(ofSize: 11, weight: .regular); txt.lineBreakMode = .byTruncatingTail
+            c.addSubview(loc); c.addSubview(txt); c.textField = txt
+            NSLayoutConstraint.activate([
+                loc.topAnchor.constraint(equalTo: c.topAnchor, constant: 3),
+                loc.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 8),
+                loc.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -8),
+                txt.topAnchor.constraint(equalTo: loc.bottomAnchor, constant: 1),
+                txt.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 8),
+                txt.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -8),
+            ])
+            return c
+        }()
+        let rel: String
+        if let repoPath, hit.url.path.hasPrefix(repoPath + "/") { rel = String(hit.url.path.dropFirst(repoPath.count + 1)) }
+        else { rel = hit.url.lastPathComponent }
+        (cell.viewWithTag(1) as? NSTextField)?.stringValue = "\(rel):\(hit.line)"
+        cell.textField?.stringValue = hit.text
+        return cell
     }
 
     // MARK: - Repository
@@ -223,6 +436,59 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         onTitleChange?(url.lastPathComponent)
         if persist { onRepoChange?() }
         updateEmptyState()
+        loadGitStatus()
+    }
+
+    // MARK: - Git status (decorates the tree like VS Code)
+
+    private func loadGitStatus() {
+        guard let path = repoPath else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let raw = CodeEditorPanel.git(path, ["status", "--porcelain"])
+            var map: [String: (letter: String, color: NSColor)] = [:]
+            for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
+                let s = String(line)
+                guard s.count > 3 else { continue }
+                let code = s.prefix(2)
+                var rel = String(s.dropFirst(3))
+                if let arrow = rel.range(of: " -> ") { rel = String(rel[arrow.upperBound...]) }   // rename → new path
+                rel = rel.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                if code.contains("?") { map[rel] = ("U", CodeEditorPanel.addedColor) }
+                else if code.contains("A") { map[rel] = ("A", CodeEditorPanel.addedColor) }
+                else if code.contains("D") { map[rel] = ("D", CodeEditorPanel.deletedColor) }
+                else if code.contains("R") { map[rel] = ("R", CodeEditorPanel.modifiedColor) }
+                else { map[rel] = ("M", CodeEditorPanel.modifiedColor) }
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.gitStatus = map
+                self.outline.reloadData()
+            }
+        }
+    }
+
+    /// Status for a node: a file's own status, or a "modified" tint for a folder that contains changes.
+    private func statusForNode(_ node: FileNode) -> (letter: String, color: NSColor)? {
+        guard let repoPath, node.url.path.hasPrefix(repoPath + "/") else { return nil }
+        let rel = String(node.url.path.dropFirst(repoPath.count + 1))
+        if node.isDirectory {
+            return gitStatus.keys.contains { $0 == rel || $0.hasPrefix(rel + "/") }
+                ? ("", CodeEditorPanel.modifiedColor) : nil
+        }
+        return gitStatus[rel]
+    }
+
+    private static func git(_ path: String, _ args: [String]) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", path] + args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do { try process.run() } catch { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     // MARK: - File tree (NSOutlineView)
@@ -248,14 +514,20 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
             let iv = NSImageView(); iv.translatesAutoresizingMaskIntoConstraints = false
             let tf = NSTextField(labelWithString: ""); tf.translatesAutoresizingMaskIntoConstraints = false
             tf.font = .systemFont(ofSize: 12); tf.lineBreakMode = .byTruncatingTail
-            c.addSubview(iv); c.addSubview(tf); c.imageView = iv; c.textField = tf
+            let st = NSTextField(labelWithString: ""); st.translatesAutoresizingMaskIntoConstraints = false
+            st.font = .systemFont(ofSize: 11, weight: .semibold); st.tag = 99
+            st.setContentHuggingPriority(.required, for: .horizontal)
+            st.setContentCompressionResistancePriority(.required, for: .horizontal)
+            c.addSubview(iv); c.addSubview(tf); c.addSubview(st); c.imageView = iv; c.textField = tf
             NSLayoutConstraint.activate([
                 iv.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 2),
                 iv.centerYAnchor.constraint(equalTo: c.centerYAnchor),
                 iv.widthAnchor.constraint(equalToConstant: 16), iv.heightAnchor.constraint(equalToConstant: 16),
                 tf.leadingAnchor.constraint(equalTo: iv.trailingAnchor, constant: 5),
-                tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -4),
                 tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
+                tf.trailingAnchor.constraint(lessThanOrEqualTo: st.leadingAnchor, constant: -6),
+                st.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -8),
+                st.centerYAnchor.constraint(equalTo: c.centerYAnchor),
             ])
             return c
         }()
@@ -263,6 +535,13 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         icon.size = NSSize(width: 16, height: 16)
         cell.imageView?.image = icon
         cell.textField?.stringValue = node.url.lastPathComponent
+        // Colour the name + show a git status letter (VS Code style) when the file/folder has changes.
+        let status = statusForNode(node)
+        cell.textField?.textColor = status?.color ?? .labelColor
+        if let st = cell.viewWithTag(99) as? NSTextField {
+            st.stringValue = status?.letter ?? ""
+            st.textColor = status?.color ?? .secondaryLabelColor
+        }
         return cell
     }
 
@@ -409,5 +688,6 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         saveWork?.cancel(); saveWork = nil
         guard let url = editorModel.fileURL else { return }
         try? editorModel.text.write(to: url, atomically: true, encoding: .utf8)
+        loadGitStatus()   // the file may now be modified — refresh the tree decorations
     }
 }

@@ -1,9 +1,8 @@
 import AppKit
 
-final class MainWindowController: NSWindowController, NSToolbarDelegate {
+final class MainWindowController: NSWindowController {
     private let model: AppModel
     private var splitViewController: MainSplitViewController!
-    private weak var snapButton: NSButton?
 
     init(model: AppModel) {
         self.model = model
@@ -49,9 +48,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
     private func configure(_ window: NSWindow) {
         window.title = "Sprawl"
         window.titleVisibility = .hidden
-        // Let the unified toolbar render its system material (Liquid Glass on macOS 26) instead of
-        // being fully transparent — gives the top bar a frosted-glass look over the canvas.
-        window.titlebarAppearsTransparent = false
+        // Flat top bar: no system toolbar (so macOS 26 can't draw its rounded "glass" capsules).
+        // A transparent titlebar over a solid #141414 window background; the bar itself (a custom
+        // view at the top of the content) paints the #141414 fill and the 1px #383838 bottom border.
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = NSColor(srgbRed: 0x14 / 255, green: 0x14 / 255, blue: 0x14 / 255, alpha: 1)
         window.appearance = NSAppearance(named: .darkAqua)
         window.center()   // first-launch default; a saved frame is applied via restoreWindowFrame.
 
@@ -64,92 +65,16 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
 
         let split = MainSplitViewController(model: model)
         splitViewController = split
-        window.contentViewController = split
 
-        let toolbar = NSToolbar(identifier: "MainToolbar")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
+        // Root container hosting the flat top bar, the split view beneath it, and a "tab" row that
+        // slides down from under the bar (content runs under the transparent titlebar via
+        // .fullSizeContentView, so the bar occupies the very top edge). Assembly + z-order live in
+        // MainSplitViewController.installChrome.
+        let root = NSViewController()
+        let container = NSView()
+        root.view = container
+        root.addChild(split)
+        split.installChrome(in: container)
+        window.contentViewController = root
     }
-
-    // MARK: - NSToolbarDelegate
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .undo, .redo, .snapToggle]
-    }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .space, .undo, .redo, .snapToggle]
-    }
-
-    func toolbar(_ toolbar: NSToolbar,
-                 itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
-                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        // Creation lives in the dock / right-click / ⌘1-9 and zoom in the View menu / ⌘-scroll;
-        // the toolbar keeps undo/redo and the snapping toggle (right side).
-        switch itemIdentifier {
-        case .snapToggle: return makeSnapItem()
-        case .undo: return makeActionItem(.undo, symbol: "arrow.uturn.backward", label: "Undo",
-                                          action: #selector(MainSplitViewController.undo(_:)))
-        case .redo: return makeActionItem(.redo, symbol: "arrow.uturn.forward", label: "Redo",
-                                          action: #selector(MainSplitViewController.redo(_:)))
-        default: return nil
-        }
-    }
-
-    /// A toolbar button whose action routes through the responder chain (target nil) to the
-    /// split-view controller's undo/redo.
-    private func makeActionItem(_ id: NSToolbarItem.Identifier, symbol: String, label: String,
-                                action: Selector) -> NSToolbarItem {
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-        let button = NSButton(title: "", image: image ?? NSImage(), target: nil, action: action)
-        button.bezelStyle = .texturedRounded
-        button.imagePosition = .imageOnly
-        button.toolTip = label
-        let item = NSToolbarItem(itemIdentifier: id)
-        item.view = button
-        item.label = label
-        return item
-    }
-
-    private func makeSnapItem() -> NSToolbarItem {
-        let button = NSButton(title: "", image: NSImage(), target: self, action: #selector(cycleSnap(_:)))
-        button.bezelStyle = .texturedRounded
-        button.imagePosition = .imageOnly
-        snapButton = button
-        let item = NSToolbarItem(itemIdentifier: .snapToggle)
-        item.view = button
-        item.label = "Snapping"
-        updateSnapButton()
-        return item
-    }
-
-    @objc private func cycleSnap(_ sender: NSButton) {
-        switch model.snapGrid {
-        case 0: model.snapGrid = 10
-        case 10: model.snapGrid = 100
-        default: model.snapGrid = 0
-        }
-        updateSnapButton()
-    }
-
-    private func updateSnapButton() {
-        let symbol: String, tip: String
-        switch model.snapGrid {
-        case 10: symbol = "square.grid.3x3"; tip = "Snapping: 10 px grid"
-        case 100: symbol = "square.grid.2x2"; tip = "Snapping: 100 px grid"
-        default: symbol = "square.dashed"; tip = "Snapping: Off"
-        }
-        snapButton?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
-        snapButton?.toolTip = tip
-        snapButton?.contentTintColor = model.snapGrid > 0 ? .controlAccentColor : nil
-    }
-}
-
-private extension NSToolbarItem.Identifier {
-    static let snapToggle = NSToolbarItem.Identifier("snapToggle")
-    static let undo = NSToolbarItem.Identifier("undo")
-    static let redo = NSToolbarItem.Identifier("redo")
 }

@@ -178,11 +178,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    private lazy var preferencesController = PreferencesWindowController()
+
     @objc func showPreferences(_ sender: Any?) {
-        let alert = NSAlert()
-        alert.messageText = "Preferences"
-        alert.informativeText = "Sprawl preferences are coming soon."
-        alert.runModal()
+        preferencesController.present()
     }
 
     /// True if the responder is inside a panel's content area (a text editor, terminal, browser, …),

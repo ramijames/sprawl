@@ -6,14 +6,19 @@ final class MainSplitViewController: NSSplitViewController {
     let model: AppModel
     private let sidebarVC: SidebarViewController
     private let canvasVC: CanvasViewController
-    private let dock = FloatingDock(frame: .zero)
+    private let annotateDock = NSView()        // small right-edge pill: Sticky / Text / Arrow
     private let optionsBar = OptionsBar(frame: .zero)
     private weak var optionsBarWindow: WindowView?
 
-    // Sub-dock (group flyout) + click-to-place state.
-    private var subDock: SubDock?
-    private weak var subDockAnchor: NSView?
-    private var subDockMonitor: Any?
+    // Top-bar group tabs (each opens a custom dropdown of tools) + click-to-place state.
+    private weak var snapButton: NSButton?
+    private weak var chromeContainer: NSView?     // hosts the top bar, the split view, and the dropdown
+    private weak var topBarView: NSView?          // the flat top bar (dropdown anchors under it)
+    private var dropdown: NSView?                 // the open group's dropdown (nil when closed)
+    private var dropdownTop: NSLayoutConstraint?  // dropdown.top relative to the bar's bottom (animated)
+    private var dropdownMonitor: Any?             // dismisses the dropdown on an outside click / ESC
+    private var groupButtons: [Int: NSButton] = [:]
+    private var activeGroupTag = -1               // which group's dropdown is open (-1 = closed)
     private var placeKind: WorkItem.Kind?
     private var placeMonitor: Any?
 
@@ -79,30 +84,371 @@ final class MainSplitViewController: NSSplitViewController {
         }
     }
 
-    /// The floating bottom-center dock: a Project button plus tool groups whose tools arm for
-    /// click-to-place on the canvas.
+    /// The right-edge **Annotate** dock (Sticky / Text / Arrow) — small, icon-only. The rest of the
+    /// tools live in the custom top bar (see `makeTopBar`).
     private func installDock() {
-        dock.onNewProject = { [weak self] in self?.newProject(nil) }
-        // Each dock tool ARMS placement; the item is created where you next click on the canvas.
-        dock.onNewTerminal = { [weak self] in self?.beginPlacement(.terminal) }
-        dock.onNewDocument = { [weak self] in self?.beginPlacement(.document) }
-        dock.onNewBrowser = { [weak self] in self?.beginPlacement(.browser) }
-        dock.onNewCodeEditor = { [weak self] in self?.beginPlacement(.codeEditor) }
-        dock.onNewFigma = { [weak self] in self?.beginPlacement(.figma) }
-        dock.onNewGitObserver = { [weak self] in self?.beginPlacement(.gitObserver) }
-        dock.onNewGitGraph = { [weak self] in self?.beginPlacement(.gitGraph) }
-        dock.onNewProjectVelocity = { [weak self] in self?.beginPlacement(.projectVelocity) }
-        dock.onNewDiff = { [weak self] in self?.beginPlacement(.diff) }
-        dock.onNewClaude = { [weak self] in self?.beginPlacement(.assistant) }
-        dock.onNewSticky = { [weak self] in self?.beginPlacement(.sticky) }
-        dock.onNewFreeText = { [weak self] in self?.beginPlacement(.freeText) }
-        dock.onNewLine = { [weak self] in self?.beginLineDrawing() }
-        dock.onToggleSubDock = { [weak self] tools, anchor in self?.toggleSubDock(tools, anchor: anchor) }
+        annotateDock.wantsLayer = true
+        annotateDock.layer?.backgroundColor = Palette.dockFill.cgColor
+        annotateDock.layer?.cornerRadius = 18
+        annotateDock.layer?.borderWidth = 1
+        annotateDock.layer?.borderColor = Palette.dockBorder.cgColor
+        annotateDock.layer?.shadowColor = NSColor.black.cgColor
+        annotateDock.layer?.shadowOpacity = 0.45
+        annotateDock.layer?.shadowRadius = 16
+        annotateDock.layer?.shadowOffset = CGSize(width: -4, height: 0)
+        annotateDock.layer?.masksToBounds = false
+        annotateDock.translatesAutoresizingMaskIntoConstraints = false
 
-        canvasVC.addBottomOverlay(dock)
+        let sticky = DockButton(icon: LucideIcon.stickyNote, tooltip: "Sticky", compact: true) { [weak self] in self?.beginPlacement(.sticky) }
+        let text = DockButton(icon: LucideIcon.type, tooltip: "Text", compact: true) { [weak self] in self?.beginPlacement(.freeText) }
+        let arrow = DockButton(icon: LucideIcon.spline, tooltip: "Arrow", compact: true) { [weak self] in self?.beginLineDrawing() }
+        let stack = NSStackView(views: [sticky, text, arrow])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        annotateDock.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: annotateDock.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: annotateDock.bottomAnchor, constant: -8),
+            stack.leadingAnchor.constraint(equalTo: annotateDock.leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: annotateDock.trailingAnchor, constant: -8),
+        ])
+
+        canvasVC.view.addSubview(annotateDock)
+        NSLayoutConstraint.activate([
+            annotateDock.trailingAnchor.constraint(equalTo: canvasVC.view.trailingAnchor, constant: -16),
+            annotateDock.centerYAnchor.constraint(equalTo: canvasVC.view.centerYAnchor),
+        ])
 
         optionsBar.isHidden = true
         canvasVC.view.addSubview(optionsBar)   // floats above the selected annotation
+    }
+
+    // MARK: - Toolbar tool groups (Project / Ideate / Review / Create / Manage)
+
+    /// Assemble the window's content: the flat top bar across the top and the split view filling the
+    /// area beneath it. Clicking a group tab opens a custom dropdown (see openDropdown) added on top.
+    func installChrome(in container: NSView) {
+        chromeContainer = container
+        let bar = makeTopBar()
+        topBarView = bar
+        view.translatesAutoresizingMaskIntoConstraints = false   // the split view
+
+        container.addSubview(view)
+        container.addSubview(bar)   // above the split view
+
+        NSLayoutConstraint.activate([
+            bar.topAnchor.constraint(equalTo: container.topAnchor),
+            bar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+
+            view.topAnchor.constraint(equalTo: bar.bottomAnchor),
+            view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+    }
+
+    /// The app's custom flat top bar (replaces the system NSToolbar so macOS 26 can't draw its
+    /// rounded "glass" capsules around the items). A solid #141414 strip with a 1px #383838 bottom
+    /// border: sidebar toggle, the tool groups, then undo/redo and the snap toggle on the right.
+    /// Empty areas drag the window (`TopBar.mouseDownCanMoveWindow`).
+    private func makeTopBar() -> NSView {
+        let bar = TopBar()
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.heightAnchor.constraint(equalToConstant: 60).isActive = true
+
+        func icon(_ symbol: String? = nil, lucide: [LucideIcon.Shape]? = nil, tip: String,
+                  action: Selector, tag: Int = 0) -> NSButton {
+            let image: NSImage
+            if let symbol {
+                image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip) ?? NSImage()
+            } else if let lucide {
+                image = LucideIcon.image(lucide, size: 18, color: Palette.dockIcon)
+            } else {
+                image = NSImage()
+            }
+            let b = NSButton(title: "", image: image, target: self, action: action)
+            b.isBordered = false
+            b.bezelStyle = .regularSquare
+            b.imagePosition = .imageOnly
+            b.contentTintColor = Palette.dockIcon
+            b.toolTip = tip
+            b.tag = tag
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 26).isActive = true
+            return b
+        }
+        func divider() -> NSView {
+            let v = NSView()
+            v.wantsLayer = true
+            v.layer?.backgroundColor = NSColor(srgbRed: 0x38 / 255, green: 0x38 / 255, blue: 0x38 / 255, alpha: 1).cgColor
+            v.translatesAutoresizingMaskIntoConstraints = false
+            v.widthAnchor.constraint(equalToConstant: 1).isActive = true
+            v.heightAnchor.constraint(equalToConstant: 22).isActive = true
+            return v
+        }
+
+        let sidebar = icon("sidebar.left", tip: "Toggle Sidebar", action: #selector(toggleSidebarAction))
+        let project = icon(lucide: LucideIcon.folderPlus, tip: "New Project", action: #selector(newProjectAction))
+        let left = NSStackView(views: [sidebar, divider(), project])
+        left.orientation = .horizontal
+        left.alignment = .centerY
+        left.spacing = 8
+        left.translatesAutoresizingMaskIntoConstraints = false
+
+        let pill = makeGroupPill()   // the group tabs, centered in the bar
+
+        let snap = icon("square.dashed", tip: "Snapping", action: #selector(cycleSnap))
+        snapButton = snap
+        let right = NSStackView(views: [
+            icon("arrow.uturn.backward", tip: "Undo", action: #selector(undo(_:))),
+            icon("arrow.uturn.forward", tip: "Redo", action: #selector(redo(_:))),
+            divider(),
+            snap,
+        ])
+        right.orientation = .horizontal
+        right.alignment = .centerY
+        right.spacing = 8
+        right.translatesAutoresizingMaskIntoConstraints = false
+
+        bar.addSubview(left)
+        bar.addSubview(pill)
+        bar.addSubview(right)
+        NSLayoutConstraint.activate([
+            // Leading inset clears the traffic-light cluster (window uses fullSizeContentView).
+            left.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 84),
+            left.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            pill.centerXAnchor.constraint(equalTo: bar.centerXAnchor),
+            pill.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            right.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -14),
+            right.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+        ])
+        updateSnapButton()
+        return bar
+    }
+
+    /// The four group tabs (Ideate / Review / Create / Manage) grouped in a rounded pill, like a
+    /// segmented control. The open tab gets a white chip with a dark glyph (see updateGroupHighlights).
+    private func makeGroupPill() -> NSView {
+        func tab(_ lucide: [LucideIcon.Shape], _ tip: String, tag: Int) -> NSButton {
+            let glyph = LucideIcon.image(lucide, size: 22, color: Palette.dockIcon)
+            glyph.isTemplate = true   // so contentTintColor can flip it dark when selected
+            let b = NSButton(title: "", image: glyph, target: self, action: #selector(toolbarGroupClicked(_:)))
+            b.isBordered = false
+            b.bezelStyle = .regularSquare
+            b.imagePosition = .imageOnly
+            b.contentTintColor = Palette.dockIcon
+            b.toolTip = tip
+            b.tag = tag
+            b.wantsLayer = true
+            b.layer?.cornerRadius = 9
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            groupButtons[tag] = b
+            return b
+        }
+        let stack = NSStackView(views: [
+            tab(LucideIcon.lightbulb, "Ideate", tag: 1),
+            tab(LucideIcon.chartColumn, "Review", tag: 2),
+            tab(LucideIcon.appWindow, "Create", tag: 3),
+            tab(LucideIcon.squareKanban, "Manage", tag: 4),
+        ])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 4
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let pill = NSView()
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor(srgbRed: 0x1c / 255, green: 0x1c / 255, blue: 0x1c / 255, alpha: 1).cgColor
+        pill.layer?.cornerRadius = 16
+        pill.layer?.borderWidth = 1
+        pill.layer?.borderColor = NSColor(srgbRed: 0x38 / 255, green: 0x38 / 255, blue: 0x38 / 255, alpha: 1).cgColor
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        pill.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: pill.topAnchor, constant: 5),
+            stack.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -5),
+            stack.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -6),
+        ])
+        return pill
+    }
+
+    @objc private func toggleSidebarAction() { toggleSidebar(nil) }
+
+    @objc private func cycleSnap() {
+        switch model.snapGrid {
+        case 0: model.snapGrid = 10
+        case 10: model.snapGrid = 100
+        default: model.snapGrid = 0
+        }
+        updateSnapButton()
+    }
+
+    private func updateSnapButton() {
+        let symbol: String, tip: String
+        switch model.snapGrid {
+        case 10: symbol = "square.grid.3x3"; tip = "Snapping: 10 px grid"
+        case 100: symbol = "square.grid.2x2"; tip = "Snapping: 100 px grid"
+        default: symbol = "square.dashed"; tip = "Snapping: Off"
+        }
+        snapButton?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
+        snapButton?.toolTip = tip
+        snapButton?.contentTintColor = model.snapGrid > 0 ? .controlAccentColor : Palette.dockIcon
+    }
+
+    @objc private func newProjectAction() { newProject(nil) }
+
+    /// Clicking a group tab toggles its dropdown: the open group closes; another group switches.
+    @objc private func toolbarGroupClicked(_ sender: NSButton) {
+        let tag = sender.tag
+        if activeGroupTag == tag {
+            closeDropdown()
+        } else {
+            openDropdown(tag)
+        }
+    }
+
+    private func toolsForGroup(_ tag: Int) -> [DockTool] {
+        switch tag {
+        case 1: return ideateTools()
+        case 2: return reviewTools()
+        case 3: return createTools()
+        case 4: return manageTools()
+        default: return []
+        }
+    }
+
+    /// Open the group's custom dropdown beneath its tab: a rounded dark panel of rows, each an icon
+    /// on the left with the tool's name beside it. Fades/slides in and dismisses on an outside click,
+    /// ESC, picking a tool, or clicking the tab again.
+    private func openDropdown(_ tag: Int) {
+        closeDropdown()
+        guard let container = chromeContainer, let bar = topBarView, let tab = groupButtons[tag] else { return }
+        let panel = makeDropdown(toolsForGroup(tag))
+        container.addSubview(panel)   // frontmost — over the bar and canvas
+        let top = panel.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 0)
+        dropdownTop = top
+        let centerX = panel.centerXAnchor.constraint(equalTo: tab.centerXAnchor)
+        centerX.priority = NSLayoutConstraint.Priority(750)   // yields to the edge clamps below
+        NSLayoutConstraint.activate([
+            top, centerX,
+            panel.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 8),
+            panel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -8),
+        ])
+        dropdown = panel
+        activeGroupTag = tag
+        updateGroupHighlights()
+
+        panel.alphaValue = 0
+        container.layoutSubtreeIfNeeded()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.14
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            panel.animator().alphaValue = 1
+            top.constant = 6
+            container.layoutSubtreeIfNeeded()
+        }
+
+        dropdownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            guard let self, let panel = self.dropdown, let container = self.chromeContainer else { return event }
+            if event.type == .keyDown {
+                if event.keyCode == 53 { self.closeDropdown(); return nil }   // ESC
+                return event
+            }
+            let point = container.convert(event.locationInWindow, from: nil)
+            let onTab = self.groupButtons[self.activeGroupTag].map { container.convert($0.bounds, from: $0).contains(point) } ?? false
+            if !panel.frame.contains(point) && !onTab { self.closeDropdown() }   // click outside → dismiss
+            return event
+        }
+    }
+
+    private func closeDropdown() {
+        if let m = dropdownMonitor { NSEvent.removeMonitor(m); dropdownMonitor = nil }
+        dropdown?.removeFromSuperview()
+        dropdown = nil
+        dropdownTop = nil
+        activeGroupTag = -1
+        updateGroupHighlights()
+    }
+
+    /// Build the dropdown panel: a rounded dark card holding one [icon  name] row per tool.
+    private func makeDropdown(_ tools: [DockTool]) -> NSView {
+        let panel = NSView()
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        panel.wantsLayer = true
+        panel.layer?.backgroundColor = NSColor(srgbRed: 0x1c / 255, green: 0x1c / 255, blue: 0x1c / 255, alpha: 1).cgColor
+        panel.layer?.cornerRadius = 12
+        panel.layer?.borderWidth = 1
+        panel.layer?.borderColor = NSColor(srgbRed: 0x38 / 255, green: 0x38 / 255, blue: 0x38 / 255, alpha: 1).cgColor
+        panel.layer?.shadowColor = NSColor.black.cgColor
+        panel.layer?.shadowOpacity = 0.4
+        panel.layer?.shadowRadius = 14
+        panel.layer?.shadowOffset = CGSize(width: 0, height: -4)
+        panel.layer?.masksToBounds = false
+
+        let rows: [NSView]
+        if tools.isEmpty {
+            let label = NSTextField(labelWithString: "No tools in this group yet.")
+            label.font = .systemFont(ofSize: 12)
+            label.textColor = Palette.dockIcon.withAlphaComponent(0.5)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.heightAnchor.constraint(equalToConstant: 30).isActive = true
+            rows = [label]
+        } else {
+            rows = tools.map { tool in
+                let row = DropdownRow(icon: tool.icon, label: tool.tooltip) { [weak self] in
+                    tool.onSelect()
+                    self?.closeDropdown()
+                }
+                row.widthAnchor.constraint(equalToConstant: 184).isActive = true
+                return row
+            }
+        }
+        let stack = NSStackView(views: rows)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: panel.topAnchor, constant: 6),
+            stack.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -6),
+            stack.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -6),
+        ])
+        return panel
+    }
+
+    private func updateGroupHighlights() {
+        let darkGlyph = NSColor(srgbRed: 0x14 / 255, green: 0x14 / 255, blue: 0x14 / 255, alpha: 1)
+        for (tag, btn) in groupButtons {
+            let active = tag == activeGroupTag
+            btn.layer?.backgroundColor = active ? NSColor.white.cgColor : NSColor.clear.cgColor
+            btn.contentTintColor = active ? darkGlyph : Palette.dockIcon
+        }
+    }
+
+    private func ideateTools() -> [DockTool] { [] }   // placeholder group
+    private func manageTools() -> [DockTool] { [] }   // placeholder group
+    private func reviewTools() -> [DockTool] {
+        [DockTool(icon: LucideIcon.diff, tooltip: "Diff") { [weak self] in self?.beginPlacement(.diff) },
+         DockTool(icon: LucideIcon.gauge, tooltip: "Velocity") { [weak self] in self?.beginPlacement(.projectVelocity) },
+         DockTool(icon: LucideIcon.gitCommit, tooltip: "Observer") { [weak self] in self?.beginPlacement(.gitObserver) },
+         DockTool(icon: LucideIcon.gitGraph, tooltip: "Graph") { [weak self] in self?.beginPlacement(.gitGraph) }]
+    }
+    private func createTools() -> [DockTool] {
+        [DockTool(icon: LucideIcon.squareTerminal, tooltip: "Terminal") { [weak self] in self?.beginPlacement(.terminal) },
+         DockTool(icon: LucideIcon.fileText, tooltip: "Document") { [weak self] in self?.beginPlacement(.document) },
+         DockTool(icon: LucideIcon.code, tooltip: "Code") { [weak self] in self?.beginPlacement(.codeEditor) },
+         DockTool(icon: LucideIcon.globe, tooltip: "Browser") { [weak self] in self?.beginPlacement(.browser) },
+         DockTool(icon: LucideIcon.sparkles, tooltip: "Claude") { [weak self] in self?.beginPlacement(.assistant) }]
     }
 
     /// Show/configure the floating options bar for the selected annotation or git/analytics tool,
@@ -187,44 +533,12 @@ final class MainSplitViewController: NSSplitViewController {
         canvasVC.centerOnItem(item)
     }
 
-    // MARK: - Sub-dock (group flyout)
-
-    /// Show the sub-dock of `tools` above `anchor`, or toggle it off if it's already showing there.
-    private func toggleSubDock(_ tools: [DockTool], anchor: NSView) {
-        if subDockAnchor === anchor { dismissSubDock(); return }
-        dismissSubDock()
-        guard !tools.isEmpty else { return }   // not-yet-populated groups (Ideate / Manage) just close
-        let sub = SubDock(tools: tools) { [weak self] in self?.dismissSubDock() }
-        canvasVC.view.addSubview(sub)
-        sub.layoutSubtreeIfNeeded()
-        let size = sub.fittingSize
-        let anchorFrame = canvasVC.view.convert(anchor.bounds, from: anchor)
-        let dockFrame = canvasVC.view.convert(dock.bounds, from: dock)
-        sub.frame = NSRect(x: anchorFrame.midX - size.width / 2, y: dockFrame.maxY + 8,
-                           width: size.width, height: size.height)
-        subDock = sub
-        subDockAnchor = anchor
-        // Dismiss when clicking anywhere outside the sub-dock and the dock.
-        subDockMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
-            guard let self, let sub = self.subDock else { return e }
-            let hit = e.window?.contentView?.hitTest(e.locationInWindow)
-            if let hit, hit.isDescendant(of: sub) || hit.isDescendant(of: self.dock) { return e }
-            self.dismissSubDock()
-            return e
-        }
-    }
-
-    private func dismissSubDock() {
-        subDock?.removeFromSuperview(); subDock = nil; subDockAnchor = nil
-        if let m = subDockMonitor { NSEvent.removeMonitor(m); subDockMonitor = nil }
-    }
-
     // MARK: - Click-to-place
 
     /// Arm a dock tool: the next canvas click creates `kind` at that point. (Lines have their own
     /// multi-click flow.) ESC cancels.
     func beginPlacement(_ kind: WorkItem.Kind) {
-        dismissSubDock()
+        closeDropdown()
         if kind == .line { beginLineDrawing(); return }
         cancelPlacement()
         placeKind = kind
@@ -270,7 +584,7 @@ final class MainSplitViewController: NSSplitViewController {
         model.isDrawingLine = true
         drawingItem = nil; drawingPanel = nil
         drawTwoClick = false; drawDidDrag = false
-        dismissSubDock()
+        closeDropdown()
         model.canvas.toolCursor = .crosshair
         NSCursor.crosshair.set()
         view.window?.acceptsMouseMovedEvents = true
@@ -358,7 +672,7 @@ final class MainSplitViewController: NSSplitViewController {
     /// Only treat clicks on the canvas surface as drawing; let docks / options bar work.
     private func isCanvasDrawClick(_ e: NSEvent) -> Bool {
         guard let hit = e.window?.contentView?.hitTest(e.locationInWindow) else { return false }
-        if hit.isDescendant(of: dock) || hit.isDescendant(of: optionsBar) || (subDock.map { hit.isDescendant(of: $0) } ?? false) {
+        if hit.isDescendant(of: annotateDock) || hit.isDescendant(of: optionsBar) {
             return false
         }
         guard let scroll = model.canvas.enclosingScrollView else { return false }
@@ -414,7 +728,7 @@ final class MainSplitViewController: NSSplitViewController {
             self.sidebarVC.syncSelection(self.model.selection)
             self.updateOptionsBar()
         }
-        model.onOnboardingFinished = { [weak self] in self?.dock.highlightApps() }
+        model.onOnboardingFinished = { }   // (the dock spotlight was removed with the dock rework)
         model.onRequestLineDrawing = { [weak self] in self?.beginLineDrawing() }
         // Current project changed — toolbar label only now (no canvas swap on the shared surface).
         model.onCurrentProjectChange = { [weak self] in
@@ -529,4 +843,17 @@ final class MainSplitViewController: NSSplitViewController {
     @objc func zoomIn(_ sender: Any?) { canvasVC.zoomIn() }
     @objc func zoomOut(_ sender: Any?) { canvasVC.zoomOut() }
     @objc func zoomReset(_ sender: Any?) { canvasVC.zoomReset() }
+}
+
+/// The flat custom top bar: a solid #141414 strip with a 1px #383838 bottom border. Dragging an
+/// empty part of the bar moves the window (button subviews still receive their own clicks).
+final class TopBar: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(srgbRed: 0x14 / 255, green: 0x14 / 255, blue: 0x14 / 255, alpha: 1).setFill()
+        bounds.fill()
+        NSColor(srgbRed: 0x38 / 255, green: 0x38 / 255, blue: 0x38 / 255, alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()   // bottom seam (non-flipped: y=0)
+    }
 }

@@ -17,9 +17,16 @@ final class UndoHistory {
 
     /// Record a reversible action. No-op while an undo/redo is being applied (so reversal steps
     /// don't themselves get recorded). Recording a new action clears the redo stack.
+    /// Maximum retained undo steps (configurable in Preferences; default 100).
+    private var maxDepth: Int {
+        let v = UserDefaults.standard.integer(forKey: "SprawlUndoLimit")
+        return v > 0 ? v : 100
+    }
+
     func register(_ name: String, undo: @escaping () -> Void, redo: @escaping () -> Void) {
         guard !applying else { return }
         undoStack.append(Action(name: name, undo: undo, redo: redo))
+        if undoStack.count > maxDepth { undoStack.removeFirst(undoStack.count - maxDepth) }
         redoStack.removeAll()
     }
 

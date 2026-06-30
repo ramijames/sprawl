@@ -25,13 +25,6 @@ enum LucideIcon {
         .path("M5 10h14"),
         .path("M5 21h14"),
     ]
-    static let figma: [Shape] = [
-        .path("M5 5.5A3.5 3.5 0 0 1 8.5 2H12v7H8.5A3.5 3.5 0 0 1 5 5.5z"),
-        .path("M12 2h3.5a3.5 3.5 0 1 1 0 7H12V2z"),
-        .path("M12 12.5a3.5 3.5 0 1 1 7 0 3.5 3.5 0 1 1-7 0z"),
-        .path("M5 19.5A3.5 3.5 0 0 1 8.5 16H12v3.5a3.5 3.5 0 1 1-7 0z"),
-        .path("M5 12.5A3.5 3.5 0 0 1 8.5 9H12v7H8.5A3.5 3.5 0 0 1 5 12.5z"),
-    ]
     static let squareTerminal: [Shape] = [
         .path("m7 11 2-2-2-2"),
         .path("M11 13h4"),
@@ -111,6 +104,23 @@ enum LucideIcon {
         .path("M12 3v12"),
         .path("m8 11 4 4 4-4"),
         .path("M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"),
+    ]
+    static let lightbulb: [Shape] = [
+        .path("M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"),
+        .path("M9 18h6"),
+        .path("M10 22h4"),
+    ]
+    static let appWindow: [Shape] = [
+        .rect(x: 2, y: 4, w: 20, h: 16, r: 2),
+        .path("M6 8h.01"),
+        .path("M10 8h.01"),
+        .path("M14 8h.01"),
+    ]
+    static let squareKanban: [Shape] = [
+        .rect(x: 3, y: 3, w: 18, h: 18, r: 2),
+        .path("M8 7v7"),
+        .path("M12 7v4"),
+        .path("M16 7v9"),
     ]
     static let sparkles: [Shape] = [
         .path("M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"),

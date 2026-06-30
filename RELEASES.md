@@ -25,12 +25,8 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 - **Diff.** Uncommitted changes (`git diff HEAD`) as a **changed-files list** (with per-file +/-
   counts on the right) beside a GitHub-style **side-by-side** diff for the selected file (old vs.
   new, red / green, wrapped, with line-number gutters).
-- **Figma.** Wraps the Figma web app in a panel so a file lives on the canvas (sign in inside it).
-- **Dock groups + click-to-place.** The dock is a **New Project** button plus discrete groups —
-  **Ideate**, **Annotate** (Sticky / Text / Arrow), **Review** (Diff / Velocity / Observer / Graph),
-  **Create** (Terminal / Document / Code / Figma / Browser / Claude), **Manage** — that open a custom
-  **sub-dock** above the dock (no macOS menu). Picking a tool arms it and places the item where you
-  next click on the canvas. Icons carry small captions.
+- **Preferences window.** Connected accounts, an undo-history limit, and your Claude API key
+  (stored in the Keychain), opened from the app menu.
 - **Onboarding.** A first-run wizard (intro → browser-profile access → install Claude → create your
   first project) living in a dedicated onboarding space.
 
@@ -45,6 +41,16 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 - **App menu** reorganized: About Sprawl · Preferences · Hide / Hide Others · Quit.
 - **Rename** items and projects by double-clicking their name (sidebar or window header); added names
   no longer get a numeric suffix.
+- **Top bar + group tabs.** Replaced the macOS toolbar (and its system "glass" item grouping) and the
+  bottom dock with a custom flat **top bar** (#141414, #383838 borders): a sidebar toggle, a **New
+  Project** button, and a centered pill of group **tabs** — **Ideate**, **Review** (Diff / Velocity /
+  Observer / Graph), **Create** (Terminal / Document / Code / Browser / Claude), **Manage** — each
+  opening a **custom dropdown** of tools (icon + name) below it; picking one arms it to place where you
+  next click. **Annotate** tools (Sticky / Text / Arrow) live in a small dock on the right edge; undo /
+  redo and the snap toggle sit at the right of the bar.
+
+### Removed
+- **Figma app.** Removed entirely; any saved Figma windows are dropped on load.
 
 ### Fixed
 - **Delete / Escape for every element.** Selecting a non-text panel now pulls keyboard focus to it,

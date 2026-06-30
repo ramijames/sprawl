@@ -181,6 +181,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Project Velocity",
                          action: #selector(MainSplitViewController.newProjectVelocity(_:)),
                          keyEquivalent: "6")
+        fileMenu.addItem(withTitle: "New Claude",
+                         action: #selector(MainSplitViewController.newClaude(_:)),
+                         keyEquivalent: "7")
         // ⌘T opens a tab in the focused browser; auto-disabled when no browser is focused (the
         // action is only implemented by NavigatingWebView).
         fileMenu.addItem(withTitle: "New Tab",

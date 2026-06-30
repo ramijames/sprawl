@@ -10,6 +10,7 @@ final class WorkItem {
         case gitObserver
         case gitGraph
         case projectVelocity
+        case assistant
         var symbolName: String {
             switch self {
             case .terminal: return "terminal"
@@ -18,6 +19,7 @@ final class WorkItem {
             case .gitObserver: return "chart.bar.xaxis"
             case .gitGraph: return "point.3.connected.trianglepath.dotted"
             case .projectVelocity: return "gauge.with.dots.needle.67percent"
+            case .assistant: return "sparkles"
             }
         }
     }
@@ -36,6 +38,8 @@ final class WorkItem {
     var gitGraph: GitGraphPanel?
     /// Project Velocity items host a development-speed gauge.
     var projectVelocity: ProjectVelocityPanel?
+    /// Claude assistant panel (streaming chat, repo-aware).
+    var assistant: ClaudePanel?
 
     /// The active document tab's panel (Save targets this), if this is a document item.
     var activeDocumentLeaf: DocumentLeaf? { container?.activeLeaf as? DocumentLeaf }
@@ -271,6 +275,7 @@ final class AppModel {
             case .gitObserver: base = "Git Observer"
             case .gitGraph: base = "Git Graph"
             case .projectVelocity: base = "Project Velocity"
+            case .assistant: base = "Claude"
             }
             let count = project.items.filter { $0.kind == kind }.count + 1
             name = "\(base) \(count)"
@@ -454,6 +459,15 @@ final class AppModel {
             }
             panel.onRepoChange = { [weak self] in self?.onPersistableChange?() }
             item.projectVelocity = panel
+        case .assistant:
+            // Inherit repo context from a sibling Git widget in the same project, if any.
+            let siblingRepo = project.items.lazy.compactMap {
+                $0.gitObserver?.repoPath ?? $0.gitGraph?.repoPath ?? $0.projectVelocity?.repoPath
+            }.first
+            let panel = ClaudePanel(repoPath: contentURL?.path ?? siblingRepo)
+            panel.attach(to: window)
+            panel.onRepoChange = { [weak self] in self?.onPersistableChange?() }
+            item.assistant = panel
         }
 
         project.items.append(item)
@@ -544,6 +558,7 @@ final class AppModel {
                 case .gitObserver: kindState = .gitObserver
                 case .gitGraph: kindState = .gitGraph
                 case .projectVelocity: kindState = .projectVelocity
+                case .assistant: kindState = .assistant
                 }
                 return ItemState(
                     name: item.name,
@@ -551,7 +566,7 @@ final class AppModel {
                     frame: item.window?.frame ?? .zero,
                     tabs: tabStates(for: item),
                     activeTab: item.container?.activeIndex,
-                    workingDirectory: item.gitObserver?.repoPath ?? item.gitGraph?.repoPath ?? item.projectVelocity?.repoPath,
+                    workingDirectory: item.gitObserver?.repoPath ?? item.gitGraph?.repoPath ?? item.projectVelocity?.repoPath ?? item.assistant?.repoPath,
                     browserURL: item.browser?.currentURL,
                     browserTabs: item.browser?.tabURLs,
                     browserActiveTab: item.browser?.activeTabIndex)
@@ -595,6 +610,9 @@ final class AppModel {
                     contentURL = item.workingDirectory.map { URL(fileURLWithPath: $0) }
                 case .projectVelocity:
                     kind = .projectVelocity
+                    contentURL = item.workingDirectory.map { URL(fileURLWithPath: $0) }
+                case .assistant:
+                    kind = .assistant
                     contentURL = item.workingDirectory.map { URL(fileURLWithPath: $0) }
                 case .browser:
                     kind = .browser; contentURL = nil

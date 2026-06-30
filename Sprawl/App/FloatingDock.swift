@@ -11,6 +11,7 @@ final class FloatingDock: NSView {
     var onNewGitObserver: (() -> Void)?
     var onNewGitGraph: (() -> Void)?
     var onNewProjectVelocity: (() -> Void)?
+    var onNewClaude: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -41,6 +42,7 @@ final class FloatingDock: NSView {
             menu.addItem(self.folderItem("New Terminal", LucideIcon.squareTerminal) { self.onNewTerminal?() })
             menu.addItem(self.folderItem("New Document", LucideIcon.fileText) { self.onNewDocument?() })
             menu.addItem(self.folderItem("New Browser", LucideIcon.globe) { self.onNewBrowser?() })
+            menu.addItem(self.folderItem("New Claude", LucideIcon.sparkles) { self.onNewClaude?() })
         }
         let gitButton = makeFolderButton(icon: LucideIcon.gitBranch, tooltip: "Git") { [weak self] menu in
             guard let self else { return }

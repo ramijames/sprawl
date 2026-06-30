@@ -64,6 +64,7 @@ final class MainSplitViewController: NSSplitViewController {
         dock.onNewGitObserver = { [weak self] in self?.newItemFromDock(.gitObserver) }
         dock.onNewGitGraph = { [weak self] in self?.newItemFromDock(.gitGraph) }
         dock.onNewProjectVelocity = { [weak self] in self?.newItemFromDock(.projectVelocity) }
+        dock.onNewClaude = { [weak self] in self?.newItemFromDock(.assistant) }
         canvasVC.addBottomOverlay(dock)
     }
 
@@ -119,6 +120,7 @@ final class MainSplitViewController: NSSplitViewController {
     @objc func newGitObserver(_ sender: Any?) { model.addItem(kind: .gitObserver) }
     @objc func newGitGraph(_ sender: Any?) { model.addItem(kind: .gitGraph) }
     @objc func newProjectVelocity(_ sender: Any?) { model.addItem(kind: .projectVelocity) }
+    @objc func newClaude(_ sender: Any?) { model.addItem(kind: .assistant) }
 
     @objc func newProject(_ sender: Any?) {
         let anchor = canvasVC.freeAnchorNearViewport()

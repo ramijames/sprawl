@@ -61,7 +61,7 @@ struct TabState: Codable {
 }
 
 struct ItemState: Codable {
-    enum Kind: String, Codable { case terminal, document, browser, files, gitObserver, gitGraph, projectVelocity }
+    enum Kind: String, Codable { case terminal, document, browser, files, gitObserver, gitGraph, projectVelocity, assistant }
 
     var name: String
     var kind: Kind

@@ -325,6 +325,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             menu.addItem(withTitle: "New Git Observer", action: #selector(contextNewGitObserver), keyEquivalent: "")
             menu.addItem(withTitle: "New Git Graph", action: #selector(contextNewGitGraph), keyEquivalent: "")
             menu.addItem(withTitle: "New Project Velocity", action: #selector(contextNewProjectVelocity), keyEquivalent: "")
+            menu.addItem(withTitle: "New Claude", action: #selector(contextNewClaude), keyEquivalent: "")
         } else {
             contextMenuProjectID = nil
             menu.addItem(withTitle: "New Project", action: #selector(contextNewProject), keyEquivalent: "")
@@ -340,6 +341,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     @objc private func contextNewGitObserver() { createContextItem(.gitObserver) }
     @objc private func contextNewGitGraph() { createContextItem(.gitGraph) }
     @objc private func contextNewProjectVelocity() { createContextItem(.projectVelocity) }
+    @objc private func contextNewClaude() { createContextItem(.assistant) }
 
     private func createContextItem(_ kind: WorkItem.Kind) {
         guard let id = contextMenuProjectID else { return }

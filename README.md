@@ -41,6 +41,10 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
 - **Project Velocity** — a glanceable health summary of a repo: a **recency** header (colored dot +
   "Updated N days ago"), a **commit histogram** across the whole history (so spikes in activity
   stand out), and a **core-contributors** list with share bars showing who's doing the work.
+- **Claude** — a streaming AI assistant panel (Anthropic Messages API) with a model picker
+  (Sonnet 4.6 / Opus 4.8 / Haiku 4.5) that's **repo-aware by location**: created inside a project
+  that has a Git widget, it inherits that repo's branch, status, and recent commits as context. The
+  API key is stored in the macOS Keychain. See [`dev-docs/claude-integration-spec.md`](dev-docs/claude-integration-spec.md).
 - **Projects on one shared canvas** — every project is a labeled "folder" card that wraps its
   own windows; they're laid out spatially across the same surface, not hidden behind tabs.
   Click a project in the sidebar to pan/zoom straight to it. Double-click a folder's tab to
@@ -49,8 +53,8 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   nothing, a folder to select that project, or a window/terminal to select that item.
 - **Floating dock** — a rounded toolbar pinned to the bottom-center of the canvas (Lucide icons):
   a standalone **New Project** button plus grouped flyout folders — **Apps** (Terminal / Document /
-  Browser), **Git** (Git Observer / Git Graph), and **Analytics** (Project Velocity) — each opening
-  a menu of windows to create in the focused project.
+  Browser / Claude), **Git** (Git Observer / Git Graph), and **Analytics** (Project Velocity) — each
+  opening a menu of windows to create in the focused project.
 - **Right-click** — empty canvas to make a project where you click; empty space inside a folder
   to add a terminal / document / browser / Git Observer / Git Graph / Project Velocity to it.
 - **Persistent workspace** — close the app and reopen it to find everything exactly where you
@@ -132,6 +136,7 @@ button, the keyboard, or by **right-clicking the canvas**:
 | New Git Observer | ⌘4      |
 | New Git Graph    | ⌘5      |
 | New Project Velocity | ⌘6  |
+| New Claude       | ⌘7       |
 | New Tab (in the selected window) | ⌘T |
 | Close Tab (in the selected window) | ⌘W |
 | Fit selected window to screen | ⌘` |

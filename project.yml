@@ -11,6 +11,7 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     CODE_SIGN_STYLE: Manual
     # Stable self-signed identity (created in Keychain Access) so the app's code identity
     # doesn't change every rebuild — macOS TCC then remembers granted permissions across builds
@@ -50,7 +51,16 @@ targets:
           rm -rf "$DEST"
           mkdir -p "$PROJECT_DIR/build"
           cp -R "$TARGET_BUILD_DIR/$WRAPPER_NAME" "$DEST"
-          # cp invalidates the nested signatures, so re-sign the copy with the same identity
-          # (stable cert if set, else ad-hoc) so it launches and keeps a consistent code identity.
-          codesign --force --deep --sign "${CODE_SIGN_IDENTITY:--}" "$DEST" >/dev/null 2>&1 \
-            || codesign --force --deep --sign - "$DEST" >/dev/null 2>&1 || true
+          # cp invalidates the nested signatures, so re-sign the copy. `--deep` over the whole
+          # bundle is unreliable with the debug-dylib layout (Sprawl.debug.dylib / __preview.dylib)
+          # and can leave the app *unsigned* — launchd then refuses it. Instead sign each nested
+          # Mach-O individually (frameworks, then the MacOS binaries), then the app bundle last,
+          # preferring the stable cert and falling back to ad-hoc per item so it always ends signed.
+          # Best-effort per item (trailing `|| true`) so signing never *fails the build* — e.g.
+          # when a previous build/Sprawl.app is still running, its binary is busy and can't be
+          # overwritten. Quit the running app before building to get a fully signed copy.
+          SIGN_ID="${CODE_SIGN_IDENTITY:--}"
+          sign() { codesign --force --sign "$SIGN_ID" "$1" >/dev/null 2>&1 || codesign --force --sign - "$1" >/dev/null 2>&1 || true; }
+          find "$DEST/Contents" -type d -name "*.framework" | while read -r fw; do sign "$fw"; done
+          find "$DEST/Contents/MacOS" -type f | while read -r bin; do sign "$bin"; done
+          sign "$DEST"

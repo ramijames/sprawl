@@ -3,6 +3,43 @@
 A running log of notable changes to Sprawl, newest first. Dates are `YYYY-MM-DD`. The app is
 pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-tagged for now.
 
+## 2026-06-29
+
+### Added
+- **Git Observer.** A window that points at any git repo and shows a GitHub-style **contribution
+  graph** for a calendar year (Jan–Dec) with **◀ / ▶ year navigation** and horizontal scroll, plus
+  a **commit timeline** (date · subject · author). The selected repo persists with the workspace.
+- **Git Graph.** Visualizes a repo's **branch & merge history** as colored swim-lanes — a node per
+  commit, curved fork/merge connectors, ref chips, and a subject / author / short-hash column
+  (newest first, latest 2000 commits).
+- **Project Velocity.** A glanceable repo health summary: a recency header ("Updated N days ago"),
+  a **commit histogram** over the whole history (spikes stand out), and a **core-contributors** list
+  with share bars showing who's doing the work.
+- **Dock folders.** The floating dock is now a standalone **New Project** button plus grouped
+  flyout folders — **Apps** (Terminal / Document / Browser), **Git** (Git Observer / Git Graph),
+  **Analytics** (Project Velocity) — each a caret button opening a menu *above* the dock. New File
+  menu items + shortcuts: Git Graph (⌘5), Project Velocity (⌘6).
+- **App icon.** Wired up an asset catalog (`AppIcon`) with a generator script
+  (`scripts/make-icon.sh`) that slices a single 1024px master into all macOS sizes.
+- **Empty states.** Git Observer / Graph / Velocity show a centered faded icon + "Select Repository"
+  button until a repository is chosen.
+- **Crash logging.** A `CrashReporter` captures Swift fatal errors (with file/line), uncaught
+  exceptions, and signal backtraces to `~/Library/Application Support/Sprawl/console.log`.
+
+### Fixed
+- **OAuth/popup sign-in crash.** Adopting a popup's web configuration re-registered the `sprawlFocus`
+  script message handler and threw `NSInvalidArgumentException`; registration is now idempotent.
+- **Git Graph resize crash.** The graph's document view was under-constrained, so resizing could
+  produce a NaN frame that trapped in `draw`; added position constraints + finite/range guards.
+- **Git Observer empty grid.** The contribution view had a zero frame (document view left with
+  `translatesAutoresizingMaskIntoConstraints = true`), so no cells drew.
+- **Build signing.** The post-build copy to `./build/Sprawl.app` now signs each nested binary
+  individually (the old `--deep` pass could silently leave the app unsigned → launch failures).
+
+### Changed
+- **Window drag/resize** suppress Core Animation's implicit animation so panels track the cursor
+  exactly; canvas + window chrome rasterize asynchronously.
+
 ## 2026-06-28
 
 ### Added

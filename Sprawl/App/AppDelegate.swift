@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var terminalScrollAccumulator: CGFloat = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        CrashReporter.install()                 // capture crashes to console.log before anything else
         NSScroller.forceOverlayStyleAppWide()   // thin scrollers everywhere, before any are created
         setupMenu()
 
@@ -171,6 +172,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Browser",
                          action: #selector(MainSplitViewController.newBrowser(_:)),
                          keyEquivalent: "3")
+        fileMenu.addItem(withTitle: "New Git Observer",
+                         action: #selector(MainSplitViewController.newGitObserver(_:)),
+                         keyEquivalent: "4")
+        fileMenu.addItem(withTitle: "New Git Graph",
+                         action: #selector(MainSplitViewController.newGitGraph(_:)),
+                         keyEquivalent: "5")
+        fileMenu.addItem(withTitle: "New Project Velocity",
+                         action: #selector(MainSplitViewController.newProjectVelocity(_:)),
+                         keyEquivalent: "6")
         // ⌘T opens a tab in the focused browser; auto-disabled when no browser is focused (the
         // action is only implemented by NavigatingWebView).
         fileMenu.addItem(withTitle: "New Tab",

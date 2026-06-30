@@ -61,6 +61,9 @@ final class MainSplitViewController: NSSplitViewController {
         dock.onNewTerminal = { [weak self] in self?.newItemFromDock(.terminal) }
         dock.onNewDocument = { [weak self] in self?.newItemFromDock(.document) }
         dock.onNewBrowser = { [weak self] in self?.newItemFromDock(.browser) }
+        dock.onNewGitObserver = { [weak self] in self?.newItemFromDock(.gitObserver) }
+        dock.onNewGitGraph = { [weak self] in self?.newItemFromDock(.gitGraph) }
+        dock.onNewProjectVelocity = { [weak self] in self?.newItemFromDock(.projectVelocity) }
         canvasVC.addBottomOverlay(dock)
     }
 
@@ -113,6 +116,9 @@ final class MainSplitViewController: NSSplitViewController {
     @objc func newTerminal(_ sender: Any?) { model.addItem(kind: .terminal) }
     @objc func newDocument(_ sender: Any?) { model.addItem(kind: .document) }
     @objc func newBrowser(_ sender: Any?) { model.addItem(kind: .browser) }
+    @objc func newGitObserver(_ sender: Any?) { model.addItem(kind: .gitObserver) }
+    @objc func newGitGraph(_ sender: Any?) { model.addItem(kind: .gitGraph) }
+    @objc func newProjectVelocity(_ sender: Any?) { model.addItem(kind: .projectVelocity) }
 
     @objc func newProject(_ sender: Any?) {
         let anchor = canvasVC.freeAnchorNearViewport()

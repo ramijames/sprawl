@@ -7,11 +7,17 @@ final class WorkItem {
         case terminal
         case document
         case browser
+        case gitObserver
+        case gitGraph
+        case projectVelocity
         var symbolName: String {
             switch self {
             case .terminal: return "terminal"
             case .document: return "doc.text"
             case .browser: return "globe"
+            case .gitObserver: return "chart.bar.xaxis"
+            case .gitGraph: return "point.3.connected.trianglepath.dotted"
+            case .projectVelocity: return "gauge.with.dots.needle.67percent"
             }
         }
     }
@@ -24,6 +30,12 @@ final class WorkItem {
     var container: TabbedContainer?
     /// Strong reference so the web view stays alive while the item exists.
     var browser: BrowserPanel?
+    /// Git Observer items host a repo contribution graph + commit timeline.
+    var gitObserver: GitObserverPanel?
+    /// Git Graph items host a branch/merge history graph.
+    var gitGraph: GitGraphPanel?
+    /// Project Velocity items host a development-speed gauge.
+    var projectVelocity: ProjectVelocityPanel?
 
     /// The active document tab's panel (Save targets this), if this is a document item.
     var activeDocumentLeaf: DocumentLeaf? { container?.activeLeaf as? DocumentLeaf }
@@ -256,6 +268,9 @@ final class AppModel {
             case .terminal: base = "Terminal"
             case .document: base = "Document"
             case .browser: base = "Browser"
+            case .gitObserver: base = "Git Observer"
+            case .gitGraph: base = "Git Graph"
+            case .projectVelocity: base = "Project Velocity"
             }
             let count = project.items.filter { $0.kind == kind }.count + 1
             name = "\(base) \(count)"
@@ -412,6 +427,33 @@ final class AppModel {
                 window.onClose?(window)
             }
             item.browser = panel
+        case .gitObserver:
+            let panel = GitObserverPanel(repoPath: contentURL?.path)
+            panel.attach(to: window)
+            panel.onTitleChange = { [weak window] title in
+                guard let window, !title.isEmpty else { return }
+                window.title = title
+            }
+            panel.onRepoChange = { [weak self] in self?.onPersistableChange?() }
+            item.gitObserver = panel
+        case .gitGraph:
+            let panel = GitGraphPanel(repoPath: contentURL?.path)
+            panel.attach(to: window)
+            panel.onTitleChange = { [weak window] title in
+                guard let window, !title.isEmpty else { return }
+                window.title = title
+            }
+            panel.onRepoChange = { [weak self] in self?.onPersistableChange?() }
+            item.gitGraph = panel
+        case .projectVelocity:
+            let panel = ProjectVelocityPanel(repoPath: contentURL?.path)
+            panel.attach(to: window)
+            panel.onTitleChange = { [weak window] title in
+                guard let window, !title.isEmpty else { return }
+                window.title = title
+            }
+            panel.onRepoChange = { [weak self] in self?.onPersistableChange?() }
+            item.projectVelocity = panel
         }
 
         project.items.append(item)
@@ -499,6 +541,9 @@ final class AppModel {
                 case .terminal: kindState = .terminal
                 case .document: kindState = .document
                 case .browser: kindState = .browser
+                case .gitObserver: kindState = .gitObserver
+                case .gitGraph: kindState = .gitGraph
+                case .projectVelocity: kindState = .projectVelocity
                 }
                 return ItemState(
                     name: item.name,
@@ -506,6 +551,7 @@ final class AppModel {
                     frame: item.window?.frame ?? .zero,
                     tabs: tabStates(for: item),
                     activeTab: item.container?.activeIndex,
+                    workingDirectory: item.gitObserver?.repoPath ?? item.gitGraph?.repoPath ?? item.projectVelocity?.repoPath,
                     browserURL: item.browser?.currentURL,
                     browserTabs: item.browser?.tabURLs,
                     browserActiveTab: item.browser?.activeTabIndex)
@@ -541,6 +587,15 @@ final class AppModel {
                 case .terminal: kind = .terminal; contentURL = nil
                 case .document: kind = .document; contentURL = item.filePath.map { URL(fileURLWithPath: $0) }
                 case .files: continue   // the Files app was removed; drop any saved files windows
+                case .gitObserver:
+                    kind = .gitObserver
+                    contentURL = item.workingDirectory.map { URL(fileURLWithPath: $0) }
+                case .gitGraph:
+                    kind = .gitGraph
+                    contentURL = item.workingDirectory.map { URL(fileURLWithPath: $0) }
+                case .projectVelocity:
+                    kind = .projectVelocity
+                    contentURL = item.workingDirectory.map { URL(fileURLWithPath: $0) }
                 case .browser:
                     kind = .browser; contentURL = nil
                     // Prefer the full tab list; fall back to the legacy single URL.

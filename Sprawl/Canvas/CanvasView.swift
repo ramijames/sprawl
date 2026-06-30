@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 /// The single large document view that hosts every project's window panels. Flipped so the
 /// origin is top-left. Draws a dotted grid and ONE "folder" per project (a rounded body wrapping
@@ -60,11 +61,13 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     override init(frame frameRect: NSRect) {
         super.init(frame: NSRect(origin: .zero, size: CanvasView.canvasSize))
         wantsLayer = true
+        layer?.drawsAsynchronously = true   // folder-card vectors rasterize off the main thread
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         wantsLayer = true
+        layer?.drawsAsynchronously = true
     }
 
     // MARK: - Drawing
@@ -262,6 +265,8 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         let grid = snapGrid
         let dx = Self.snap(point.x - dragStartMouse.x, to: grid)
         let dy = Self.snap(point.y - dragStartMouse.y, to: grid)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)   // panels follow the cursor without easing behind it
         if dragWindowOrigins.isEmpty {
             project.anchor = NSPoint(x: dragStartAnchor.x + dx, y: dragStartAnchor.y + dy)
         } else {
@@ -269,6 +274,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
                 entry.window.setFrameOrigin(NSPoint(x: entry.origin.x + dx, y: entry.origin.y + dy))
             }
         }
+        CATransaction.commit()
         needsDisplay = true
     }
 
@@ -316,6 +322,9 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             menu.addItem(withTitle: "New Terminal", action: #selector(contextNewTerminal), keyEquivalent: "")
             menu.addItem(withTitle: "New Document", action: #selector(contextNewDocument), keyEquivalent: "")
             menu.addItem(withTitle: "New Browser", action: #selector(contextNewBrowser), keyEquivalent: "")
+            menu.addItem(withTitle: "New Git Observer", action: #selector(contextNewGitObserver), keyEquivalent: "")
+            menu.addItem(withTitle: "New Git Graph", action: #selector(contextNewGitGraph), keyEquivalent: "")
+            menu.addItem(withTitle: "New Project Velocity", action: #selector(contextNewProjectVelocity), keyEquivalent: "")
         } else {
             contextMenuProjectID = nil
             menu.addItem(withTitle: "New Project", action: #selector(contextNewProject), keyEquivalent: "")
@@ -328,6 +337,9 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     @objc private func contextNewTerminal() { createContextItem(.terminal) }
     @objc private func contextNewDocument() { createContextItem(.document) }
     @objc private func contextNewBrowser() { createContextItem(.browser) }
+    @objc private func contextNewGitObserver() { createContextItem(.gitObserver) }
+    @objc private func contextNewGitGraph() { createContextItem(.gitGraph) }
+    @objc private func contextNewProjectVelocity() { createContextItem(.projectVelocity) }
 
     private func createContextItem(_ kind: WorkItem.Kind) {
         guard let id = contextMenuProjectID else { return }

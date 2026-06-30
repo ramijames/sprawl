@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 /// A floating "window" panel on the canvas: draggable title bar, edge/corner resize,
 /// close button, and a content area for hosting a terminal or editor.
@@ -78,6 +79,9 @@ final class WindowView: NSView {
         layer?.shadowRadius = 10
         layer?.shadowOffset = CGSize(width: 0, height: -3)
         layer?.masksToBounds = false
+        // Rasterize the vector chrome (rounded body, border, title) off the main thread so frequent
+        // redraws during resize/pan don't block the run loop.
+        layer?.drawsAsynchronously = true
 
         closeButton.image = Self.closeImage("circle.fill")   // a red dot; shows ✕ on hover
         closeButton.imagePosition = .imageOnly
@@ -89,7 +93,10 @@ final class WindowView: NSView {
 
         contentContainer.wantsLayer = true
         contentContainer.layer?.cornerRadius = 10
+        contentContainer.layer?.cornerCurve = .continuous   // macOS squircle, matches the body
         contentContainer.layer?.masksToBounds = true   // round the hosted terminal/browser/editor
+        // Opaque backing under the hosted content so a mid-resize repaint never flashes through.
+        contentContainer.layer?.backgroundColor = Palette.panelBody.cgColor
         addSubview(contentContainer)
         needsLayout = true
     }
@@ -229,6 +236,11 @@ final class WindowView: NSView {
         let dy = current.y - dragStartMouse.y
 
         let grid = (superview as? CanvasView)?.snapGrid ?? 0
+        // Suppress Core Animation's implicit position/bounds animation so the panel tracks the
+        // cursor exactly instead of easing a frame behind it.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         switch dragMode {
         case .move:
             frame.origin = NSPoint(x: CanvasView.snap(dragStartFrame.origin.x + dx, to: grid),

@@ -31,16 +31,28 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   favicon grid as its new-tab page, two-finger swipe and ⌘←/⌘→ for back/forward, and address-bar
   search. Links that open a new window become tabs; sized OAuth/sign-in popups stay separate
   windows. Open tabs are saved and restored.
+- **Git Observer** — point a window at any folder containing a git repository and see a
+  GitHub-style **contribution graph** for a calendar year (Jan–Dec, one shaded square per day),
+  with **◀ / ▶ year navigation** and horizontal scrolling, plus a **commit timeline** (date ·
+  subject · author, newest first). The chosen repository is saved and reloaded with the workspace.
+- **Git Graph** — visualize a repo's **branch & merge history** as colored swim-lanes with a node
+  per commit, curved fork/merge connectors, ref chips, and a subject / author / short-hash column
+  (newest at top, latest 2000 commits).
+- **Project Velocity** — a glanceable health summary of a repo: a **recency** header (colored dot +
+  "Updated N days ago"), a **commit histogram** across the whole history (so spikes in activity
+  stand out), and a **core-contributors** list with share bars showing who's doing the work.
 - **Projects on one shared canvas** — every project is a labeled "folder" card that wraps its
   own windows; they're laid out spatially across the same surface, not hidden behind tabs.
   Click a project in the sidebar to pan/zoom straight to it. Double-click a folder's tab to
   rename it.
 - **Selection** — a single white outline shows what's selected: click empty canvas to select
   nothing, a folder to select that project, or a window/terminal to select that item.
-- **Floating dock** — a rounded toolbar pinned to the bottom-center of the canvas (Lucide icons)
-  to create a new project, or a new terminal/document/browser in the focused project.
+- **Floating dock** — a rounded toolbar pinned to the bottom-center of the canvas (Lucide icons):
+  a standalone **New Project** button plus grouped flyout folders — **Apps** (Terminal / Document /
+  Browser), **Git** (Git Observer / Git Graph), and **Analytics** (Project Velocity) — each opening
+  a menu of windows to create in the focused project.
 - **Right-click** — empty canvas to make a project where you click; empty space inside a folder
-  to add a terminal/document/browser to that project.
+  to add a terminal / document / browser / Git Observer / Git Graph / Project Velocity to it.
 - **Persistent workspace** — close the app and reopen it to find everything exactly where you
   left it (see [Persistence](#persistence)).
 - **Dark, terminal-like UI** — chrome-less window with a unified toolbar, dark vibrancy
@@ -88,6 +100,25 @@ Prefer Xcode? After `xcodegen generate`, open `Sprawl.xcodeproj` and press **⌘
 
 ---
 
+## App icon
+
+The icon lives in the asset catalog at `Sprawl/Resources/Assets.xcassets/AppIcon.appiconset`
+(wired up via `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in `project.yml`).
+
+To set or change it, drop a single square **1024×1024 PNG** at `Sprawl/Resources/AppIcon.png`
+and run the generator, which slices it into all ten macOS sizes:
+
+```sh
+./scripts/make-icon.sh                 # uses Sprawl/Resources/AppIcon.png
+./scripts/make-icon.sh path/to/my.png  # or pass a different master
+```
+
+Then rebuild. (Prefer to manage sizes by hand? Drop the individually named PNGs —
+`icon_16x16.png`, `icon_16x16@2x.png`, … `icon_512x512@2x.png` — straight into the
+`AppIcon.appiconset` folder instead.)
+
+---
+
 ## Usage
 
 Create terminals, documents, and projects from the **floating dock**, the sidebar **+**
@@ -98,6 +129,9 @@ button, the keyboard, or by **right-clicking the canvas**:
 | New Terminal    | ⌘1       |
 | New Document    | ⌘2       |
 | New Browser     | ⌘3       |
+| New Git Observer | ⌘4      |
+| New Git Graph    | ⌘5      |
+| New Project Velocity | ⌘6  |
 | New Tab (in the selected window) | ⌘T |
 | Close Tab (in the selected window) | ⌘W |
 | Fit selected window to screen | ⌘` |
@@ -158,6 +192,13 @@ Reopening the app restores:
 If `workspace.json` ever fails to decode, it is preserved as `workspace.corrupt.json` rather
 than being overwritten, and the app starts fresh.
 
+### Crash logs
+
+Crashes (and the app's stderr) are captured to `~/Library/Application Support/Sprawl/console.log` —
+Swift fatal-error messages with file/line, uncaught exceptions, and signal backtraces. Useful when
+the app is launched via `open` (where stderr is otherwise discarded). macOS also writes full native
+reports to `~/Library/Logs/DiagnosticReports/Sprawl-*.ips`.
+
 ---
 
 ## Project structure
@@ -167,11 +208,13 @@ Sprawl/
   App/         App entry point, window controller, split view, menu, app delegate
   Canvas/      Zoomable/pannable scroll view, canvas document view, canvas controller
   Windows/     WindowView — the draggable/resizable panel chrome
-  Content/     TerminalPanel (SwiftTerm), DocumentPanel (CodeEditSourceEditor)
+  Content/     Terminal/Document panels, BrowserPanel, GitObserverPanel, GitGraphPanel,
+               ProjectVelocityPanel, TabbedContainer
   Sidebar/     Project/item source-list sidebar
   Model/       AppModel — projects, items, and snapshot/restore
   Persistence/ WorkspaceState (Codable) + WorkspaceStore (JSON on disk)
-  Support/     Palette — the color theme
+  Resources/   Assets.xcassets (AppIcon) + the master AppIcon.png
+  Support/     Palette (color theme), LucideIcon (icon renderer)
 project.yml    XcodeGen project definition (targets, settings, dependencies)
 dev-docs/      Architecture and milestone plans
 ```

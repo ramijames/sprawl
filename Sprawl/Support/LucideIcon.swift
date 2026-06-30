@@ -39,6 +39,44 @@ enum LucideIcon {
         .path("m16 16-3 3 3 3"),
         .path("M3 19h6"),
     ]
+    static let gitCommit: [Shape] = [
+        .circle(cx: 12, cy: 12, r: 3),
+        .path("M3 12h6"),
+        .path("M15 12h6"),
+    ]
+    static let layoutGrid: [Shape] = [
+        .rect(x: 3, y: 3, w: 7, h: 7, r: 1),
+        .rect(x: 14, y: 3, w: 7, h: 7, r: 1),
+        .rect(x: 14, y: 14, w: 7, h: 7, r: 1),
+        .rect(x: 3, y: 14, w: 7, h: 7, r: 1),
+    ]
+    static let gitBranch: [Shape] = [
+        .path("M6 3v12"),
+        .circle(cx: 18, cy: 6, r: 3),
+        .circle(cx: 6, cy: 18, r: 3),
+        .path("M18 9a9 9 0 0 1-9 9"),
+    ]
+    static let chartColumn: [Shape] = [
+        .path("M3 3v16a2 2 0 0 0 2 2h16"),
+        .path("M18 17V9"),
+        .path("M13 17V5"),
+        .path("M8 17v-3"),
+    ]
+    static let gitGraph: [Shape] = [
+        .circle(cx: 5, cy: 6, r: 3),
+        .circle(cx: 5, cy: 18, r: 3),
+        .circle(cx: 19, cy: 12, r: 3),
+        .path("M5 9v6"),
+        .path("M8 18h5a3 3 0 0 0 3-3v-1"),
+        .path("M16 9V8a3 3 0 0 0-3-3H8"),
+    ]
+    static let gauge: [Shape] = [
+        .path("m12 14 4-4"),
+        .path("M3.34 19a10 10 0 1 1 17.32 0"),
+    ]
+    static let chevronDown: [Shape] = [
+        .path("m6 9 6 6 6-6"),
+    ]
 
     /// Render the icon to an `NSImage` of `size` points, stroked in `color`.
     static func image(_ shapes: [Shape], size: CGFloat, color: NSColor, strokeWidth: CGFloat = 2) -> NSImage {

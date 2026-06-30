@@ -318,10 +318,16 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
 
     private func makeTab(configuration: WKWebViewConfiguration) -> Tab {
         // Inject the editable-focus tracker before the web view is created (so it's part of the
-        // config WebKit copies at init).
+        // config WebKit copies at init). A popup's adopted configuration (e.g. an OAuth sign-in
+        // window) already carries the opener's handler/script, and re-adding a script message
+        // handler with a name that already exists throws NSInvalidArgumentException — so clear any
+        // prior registration first to stay idempotent.
         let focusTracker = FocusTracker()
-        configuration.userContentController.add(focusTracker, name: FocusTracker.messageName)
-        configuration.userContentController.addUserScript(
+        let userContent = configuration.userContentController
+        userContent.removeScriptMessageHandler(forName: FocusTracker.messageName)
+        userContent.add(focusTracker, name: FocusTracker.messageName)
+        userContent.removeAllUserScripts()
+        userContent.addUserScript(
             WKUserScript(source: FocusTracker.script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
         let webView = NavigatingWebView(frame: .zero, configuration: configuration)

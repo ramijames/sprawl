@@ -318,6 +318,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(withTitle: "Fit Window to Screen",
                          action: #selector(MainSplitViewController.fitWindowToScreen(_:)),
                          keyEquivalent: "`")
+        let tile = viewMenu.addItem(withTitle: "Tile Windows",
+                                    action: #selector(MainSplitViewController.tileWindows(_:)),
+                                    keyEquivalent: "t")
+        tile.keyEquivalentModifierMask = [.command, .option]
         viewMenuItem.submenu = viewMenu
 
         NSApp.mainMenu = mainMenu

@@ -24,6 +24,9 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
 - **Snapping** — a toolbar button (top-right) toggles snapping; with it on, moving or resizing a
   window magnetically **aligns its edges and centers to nearby windows** (Figma-style smart guides),
   and lines / click-to-place snap to the grid.
+- **Auto-tiling** — arrange a project's windows into a tidy, non-overlapping layout in one undoable
+  step (then pan/zoom to frame it): **Uniform Grid**, **2×2**, **3×3**, **Columns**, or **Pack**
+  (keep sizes). From the top-bar tile button, a folder's right-click **Tile Windows** submenu, or **⌥⌘T**.
 - **Live terminals** — each terminal panel runs your login shell (`$SHELL`) with a real PTY
   (via [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)).
 - **Documents** — a plain-text editor for notes and scratch text (open / save), with word-wrap.

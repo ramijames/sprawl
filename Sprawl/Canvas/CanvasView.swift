@@ -343,12 +343,35 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             menu.addItem(withTitle: "New Sticky Pad", action: #selector(contextNewSticky), keyEquivalent: "")
             menu.addItem(withTitle: "New Free Text", action: #selector(contextNewFreeText), keyEquivalent: "")
             menu.addItem(withTitle: "New Line", action: #selector(contextNewLine), keyEquivalent: "")
+            menu.addItem(.separator())
+            let tileItem = NSMenuItem(title: "Tile Windows", action: nil, keyEquivalent: "")
+            let tileMenu = NSMenu()
+            func addTile(_ title: String, _ layout: TileLayout) {
+                let it = tileMenu.addItem(withTitle: title, action: #selector(contextTileLayout(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = LayoutBox(layout)
+            }
+            addTile("Uniform Grid", .gridAuto)
+            addTile("Grid 2×2", .grid(cols: 2))
+            addTile("Grid 3×3", .grid(cols: 3))
+            addTile("Columns", .columns)
+            tileMenu.addItem(.separator())
+            addTile("Pack (keep sizes)", .pack)
+            tileItem.submenu = tileMenu
+            menu.addItem(tileItem)
         } else {
             contextMenuProjectID = nil
             menu.addItem(withTitle: "New Project", action: #selector(contextNewProject), keyEquivalent: "")
         }
         menu.items.forEach { $0.target = self }
         return menu
+    }
+
+    @objc private func contextTileLayout(_ sender: NSMenuItem) {
+        guard let box = sender.representedObject as? LayoutBox,
+              let id = contextMenuProjectID,
+              let project = model?.projects.first(where: { $0.id == id }) else { return }
+        model?.tileProject(project, layout: box.layout)
     }
 
     @objc private func contextNewProject() { onCreateProject?(contextMenuPoint) }

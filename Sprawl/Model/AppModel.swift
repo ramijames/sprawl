@@ -1,5 +1,19 @@
 import AppKit
 
+/// How `tileProject` arranges a project's windows.
+enum TileLayout {
+    case gridAuto          // near-square uniform grid (cols = ceil(√n))
+    case grid(cols: Int)   // uniform grid with a fixed column count (2×2, 3×3, …)
+    case columns           // a single row of uniform columns
+    case pack              // keep each window's current size, packed into rows (no resize)
+}
+
+/// Carries a `TileLayout` in an `NSMenuItem.representedObject`.
+final class LayoutBox {
+    let layout: TileLayout
+    init(_ layout: TileLayout) { self.layout = layout }
+}
+
 /// A single item living inside a project: a terminal or a document. Each is backed by a
 /// `WindowView` panel on the shared canvas.
 final class WorkItem {
@@ -463,6 +477,83 @@ final class AppModel {
             undo: { [weak item] in item?.window?.frame = old; item?.window?.onGeometryChange2?() },
             redo: { [weak item] in item?.window?.frame = new; item?.window?.onGeometryChange2?() })
         onPersistableChange?()
+    }
+
+    // MARK: - Auto-tiling
+
+    /// Tile the project that owns the current selection (else the current/first project).
+    func tileCurrentProject(layout: TileLayout = .gridAuto) {
+        let ids = selectedItemIDs
+        let project = projects.first(where: { p in p.items.contains { ids.contains($0.id) } })
+            ?? currentProject ?? projects.first
+        guard let project else { return }
+        tileProject(project, layout: layout)
+    }
+
+    /// Arrange a project's windows with `layout` as a single undoable step, then pan/zoom to frame
+    /// the result. Layouts anchor at the group's current top-left, so the project stays roughly where
+    /// it is but becomes tidy and non-overlapping.
+    func tileProject(_ project: Project, layout: TileLayout = .gridAuto) {
+        let items = project.items.filter { $0.window != nil }
+        guard items.count > 1 else { return }
+        let before = items.map { $0.window!.frame }
+        let after = Self.tileFrames(before, layout: layout)
+
+        let apply: ([NSRect]) -> Void = { [weak self] frames in
+            for (i, item) in items.enumerated() {
+                item.window?.frame = frames[i]
+                item.window?.onGeometryChange2?()
+            }
+            self?.onModelChange?()
+            self?.onPersistableChange?()
+        }
+        apply(after)
+        history.register("Tile \(items.count) windows",
+            undo: { apply(before) },
+            redo: { apply(after) })
+        onFocusProject?(project)   // pan/zoom to frame the tidied project
+    }
+
+    /// Compute target frames for `layout` from the windows' current frames. Grid layouts resize every
+    /// window to the average size; `.pack` keeps each window's size and shelf-packs them into rows.
+    static func tileFrames(_ frames: [NSRect], layout: TileLayout) -> [NSRect] {
+        let n = frames.count
+        guard n > 0 else { return [] }
+        let gap: CGFloat = 24
+        let originX = frames.map { $0.minX }.min() ?? 0
+        let originY = frames.map { $0.minY }.min() ?? 0
+
+        if case .pack = layout {
+            let avgW = frames.map { $0.width }.reduce(0, +) / CGFloat(n)
+            let cols = max(1, Int(ceil(Double(n).squareRoot())))
+            let targetWidth = CGFloat(cols) * (avgW + gap)
+            var result: [NSRect] = []
+            var x = originX, y = originY, rowMaxH: CGFloat = 0
+            for f in frames {
+                if x > originX && (x + f.width) > (originX + targetWidth) {
+                    x = originX; y += rowMaxH + gap; rowMaxH = 0
+                }
+                result.append(NSRect(x: x, y: y, width: f.width, height: f.height))
+                x += f.width + gap
+                rowMaxH = max(rowMaxH, f.height)
+            }
+            return result
+        }
+
+        let cols: Int
+        switch layout {
+        case .grid(let c): cols = max(1, min(c, n))
+        case .columns: cols = n
+        default: cols = max(1, Int(ceil(Double(n).squareRoot())))   // gridAuto
+        }
+        let cellW = max(280, (frames.map { $0.width }.reduce(0, +) / CGFloat(n)).rounded())
+        let cellH = max(180, (frames.map { $0.height }.reduce(0, +) / CGFloat(n)).rounded())
+        return frames.indices.map { i in
+            let col = i % cols, row = i / cols
+            return NSRect(x: originX + CGFloat(col) * (cellW + gap),
+                          y: originY + CGFloat(row) * (cellH + gap),
+                          width: cellW, height: cellH)
+        }
     }
 
     // MARK: - Line pen tool

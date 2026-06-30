@@ -207,6 +207,7 @@ final class MainSplitViewController: NSSplitViewController {
             icon("arrow.uturn.backward", tip: "Undo", action: #selector(undo(_:))),
             icon("arrow.uturn.forward", tip: "Redo", action: #selector(redo(_:))),
             divider(),
+            icon("rectangle.grid.2x2", tip: "Tile Windows", action: #selector(showTileMenu(_:))),
             snap,
         ])
         right.orientation = .horizontal
@@ -303,6 +304,31 @@ final class MainSplitViewController: NSSplitViewController {
     }
 
     @objc private func newProjectAction() { newProject(nil) }
+
+    /// Tile the current project's windows into a uniform grid (⌥⌘T / View menu).
+    @objc func tileWindows(_ sender: Any?) { model.tileCurrentProject() }
+
+    /// The top-bar tile button drops a menu of layouts (Uniform / 2×2 / 3×3 / Columns / Pack).
+    @objc private func showTileMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        func add(_ title: String, _ layout: TileLayout) {
+            let item = menu.addItem(withTitle: title, action: #selector(tileLayoutPicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = LayoutBox(layout)
+        }
+        add("Uniform Grid", .gridAuto)
+        add("Grid 2×2", .grid(cols: 2))
+        add("Grid 3×3", .grid(cols: 3))
+        add("Columns", .columns)
+        menu.addItem(.separator())
+        add("Pack (keep sizes)", .pack)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+
+    @objc private func tileLayoutPicked(_ sender: NSMenuItem) {
+        guard let box = sender.representedObject as? LayoutBox else { return }
+        model.tileCurrentProject(layout: box.layout)
+    }
 
     /// Clicking a group tab toggles its dropdown: the open group closes; another group switches.
     @objc private func toolbarGroupClicked(_ sender: NSButton) {

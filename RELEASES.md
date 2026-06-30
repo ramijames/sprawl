@@ -27,6 +27,10 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
   new, red / green, wrapped, with line-number gutters).
 - **Preferences window.** Connected accounts, an undo-history limit, and your Claude API key
   (stored in the Keychain), opened from the app menu.
+- **Auto-tiling.** Arrange a project's windows into a tidy, non-overlapping layout as one undoable
+  step, then pan/zoom to frame the result. Layouts: **Uniform Grid**, **2×2**, **3×3**, **Columns**,
+  and **Pack** (keeps each window's size and packs them into rows). From the top-bar tile button,
+  a folder's right-click **Tile Windows** submenu, or **⌥⌘T** (View ▸ Tile Windows, Uniform Grid).
 - **Onboarding.** A first-run wizard (intro → browser-profile access → install Claude → create your
   first project) living in a dedicated onboarding space.
 

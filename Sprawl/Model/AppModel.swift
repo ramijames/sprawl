@@ -58,6 +58,9 @@ final class WorkItem {
     var name: String
     let kind: Kind
     weak var window: WindowView?
+    /// How many grid cells this window spans in a live **grid** project (resize to change). 1×1 default.
+    var gridCols: Int = 1
+    var gridRows: Int = 1
     /// Terminal & document items host a tabbed container (one or more terminal/document tabs).
     var container: TabbedContainer?
     /// Strong reference so the web view stays alive while the item exists.
@@ -305,6 +308,59 @@ final class AppModel {
         return true
     }
 
+    // MARK: Live resize-to-span (grid projects)
+
+    /// State while a window in a grid project is being *resized*: the fixed cell origin + size, and
+    /// the span it currently covers.
+    private struct ResizeDrag {
+        let project: Project
+        let item: WorkItem
+        let cell: (w: CGFloat, h: CGFloat)
+        let gap: CGFloat
+        let cols: Int
+        let originX: CGFloat
+        let originY: CGFloat
+        var cols2: Int
+        var rows2: Int
+    }
+    private var resizeDrag: ResizeDrag?
+
+    /// Begin a resize-to-span: capture the grid's cell size + the window's current cell origin.
+    func beginResizeDrag(_ item: WorkItem) {
+        guard let project = project(owning: item), project.layoutMode == .grid else { return }
+        let placed = project.items.filter { $0.window != nil }
+        guard placed.count > 1, let f = item.window?.frame else { return }
+        let cell = Self.gridCell(for: placed)
+        let cols = max(Int(ceil(Double(placed.count).squareRoot())), placed.map { $0.gridCols }.max() ?? 1)
+        resizeDrag = ResizeDrag(project: project, item: item, cell: cell, gap: 24, cols: cols,
+                                originX: f.minX, originY: f.minY, cols2: item.gridCols, rows2: item.gridRows)
+        updateResizeDrag(item)
+    }
+
+    /// During a resize: derive the spanned cell count from the live frame and highlight that block.
+    func updateResizeDrag(_ item: WorkItem) {
+        guard var drag = resizeDrag, drag.item === item, let f = item.window?.frame else { return }
+        let cw = drag.cell.w + drag.gap, ch = drag.cell.h + drag.gap
+        drag.cols2 = max(1, min(Int(((f.width + drag.gap) / cw).rounded()), drag.cols))
+        drag.rows2 = max(1, Int(((f.height + drag.gap) / ch).rounded()))
+        resizeDrag = drag
+        canvas.tileDropHighlight = NSRect(
+            x: drag.originX, y: drag.originY,
+            width: CGFloat(drag.cols2) * drag.cell.w + CGFloat(drag.cols2 - 1) * drag.gap,
+            height: CGFloat(drag.rows2) * drag.cell.h + CGFloat(drag.rows2 - 1) * drag.gap)
+    }
+
+    /// Finish a resize-to-span (if active): store the new span and reflow the grid around it.
+    func endResizeDragIfActive(_ item: WorkItem) -> Bool {
+        guard let drag = resizeDrag, drag.item === item else { return false }
+        resizeDrag = nil
+        canvas.tileDropHighlight = nil
+        item.gridCols = drag.cols2
+        item.gridRows = drag.rows2
+        reflowIfTiled(drag.project)
+        return true
+    }
+
     /// Reorder a tiled project's items to match where its windows currently sit (row-major:
     /// top-to-bottom, then left-to-right). Dragging a window over another slot thus renumbers it into
     /// that slot; a following `reflowIfTiled` snaps everything back onto the clean grid.
@@ -328,12 +384,20 @@ final class AppModel {
     }
 
     /// Re-tile a project to match its live layout mode (no undo step — used after a window is added,
-    /// removed, or moved while the project is in grid/columns mode).
+    /// removed, moved, or resized while the project is in grid/columns mode). Grid honors each
+    /// window's cell span; Columns stays a uniform single row.
     func reflowIfTiled(_ project: Project) {
-        guard let layout = Self.tileLayout(for: project.layoutMode) else { return }
         let items = project.items.filter { $0.window != nil }
         guard items.count > 1 else { return }
-        let frames = Self.tileFrames(items.map { $0.window!.frame }, layout: layout)
+        let frames: [NSRect]
+        switch project.layoutMode {
+        case .freeform:
+            return
+        case .columns:
+            frames = Self.tileFrames(items.map { $0.window!.frame }, layout: .columns)
+        case .grid:
+            frames = Self.gridFrames(for: items)
+        }
         for (i, item) in items.enumerated() {
             item.window?.frame = frames[i]
             item.window?.onGeometryChange2?()
@@ -341,6 +405,57 @@ final class AppModel {
         canvas.needsDisplay = true
         onModelChange?()
         onPersistableChange?()
+    }
+
+    /// The uniform cell size of a grid project (derived per-cell so spanning windows don't skew it).
+    private static func gridCell(for items: [WorkItem]) -> (w: CGFloat, h: CGFloat) {
+        let n = CGFloat(items.count)
+        let w = items.map { ($0.window!.frame.width) / CGFloat(max(1, $0.gridCols)) }.reduce(0, +) / n
+        let h = items.map { ($0.window!.frame.height) / CGFloat(max(1, $0.gridRows)) }.reduce(0, +) / n
+        return (max(280, w.rounded()), max(180, h.rounded()))
+    }
+
+    /// Lay out a grid project: pack each window (honoring its cell span) into the first free slot,
+    /// row-major, growing rows as needed.
+    private static func gridFrames(for items: [WorkItem]) -> [NSRect] {
+        let gap: CGFloat = 24
+        let cell = gridCell(for: items)
+        let originX = items.map { $0.window!.frame.minX }.min() ?? 0
+        let originY = items.map { $0.window!.frame.minY }.min() ?? 0
+        let cols = max(Int(ceil(Double(items.count).squareRoot())), items.map { $0.gridCols }.max() ?? 1)
+        return gridPlace(spans: items.map { (max(1, $0.gridCols), max(1, $0.gridRows)) },
+                         cols: cols, cell: cell, gap: gap, originX: originX, originY: originY)
+    }
+
+    /// First-fit row-major packing of `(colSpan, rowSpan)` blocks into a `cols`-wide grid.
+    static func gridPlace(spans: [(c: Int, r: Int)], cols: Int, cell: (w: CGFloat, h: CGFloat),
+                          gap: CGFloat, originX: CGFloat, originY: CGFloat) -> [NSRect] {
+        var occ: [[Bool]] = []
+        func ensureRows(_ upto: Int) { while occ.count <= upto { occ.append(Array(repeating: false, count: cols)) } }
+        func fits(_ r: Int, _ c: Int, _ cs: Int, _ rs: Int) -> Bool {
+            guard c + cs <= cols else { return false }
+            ensureRows(r + rs - 1)
+            for rr in r..<(r + rs) where occ[rr][c..<(c + cs)].contains(true) { return false }
+            return true
+        }
+        var result: [NSRect] = []
+        for span in spans {
+            let cs = max(1, min(span.c, cols)), rs = max(1, span.r)
+            var r = 0
+            while true {
+                ensureRows(r)
+                if let c = (0..<cols).first(where: { fits(r, $0, cs, rs) }) {
+                    for rr in r..<(r + rs) { for cc in c..<(c + cs) { occ[rr][cc] = true } }
+                    result.append(NSRect(x: originX + CGFloat(c) * (cell.w + gap),
+                                         y: originY + CGFloat(r) * (cell.h + gap),
+                                         width: CGFloat(cs) * cell.w + CGFloat(cs - 1) * gap,
+                                         height: CGFloat(rs) * cell.h + CGFloat(rs - 1) * gap))
+                    break
+                }
+                r += 1
+            }
+        }
+        return result
     }
 
     // MARK: - Projects & items
@@ -608,6 +723,7 @@ final class AppModel {
     func tileProject(_ project: Project, layout: TileLayout = .gridAuto) {
         let items = project.items.filter { $0.window != nil }
         guard items.count > 1 else { return }
+        for item in items { item.gridCols = 1; item.gridRows = 1 }   // a uniform tile resets cell spans
         let before = items.map { $0.window!.frame }
         let after = Self.tileFrames(before, layout: layout)
 
@@ -791,9 +907,18 @@ final class AppModel {
             guard let self, let item else { return }
             self.updateTileDrag(item)
         }
+        window.onResizeBegan = { [weak self, weak item] in
+            guard let self, let item else { return }
+            self.beginResizeDrag(item)
+        }
+        window.onResizeChanged = { [weak self, weak item] in
+            guard let self, let item else { return }
+            self.updateResizeDrag(item)
+        }
         window.onGeometryCommitted = { [weak self, weak item] old, new in
             guard let self, let item else { return }
-            if self.endTileDragIfActive(item) { return }   // tiled move: committed via the live drag
+            if self.endTileDragIfActive(item) { return }    // tiled move: committed via the live drag
+            if self.endResizeDragIfActive(item) { return }  // grid resize-to-span: committed via the live drag
             self.registerGeometryChange(item, from: old, to: new)
         }
 
@@ -1132,7 +1257,9 @@ final class AppModel {
             lineBend: lineBend,
             browserURL: item.browser?.currentURL,
             browserTabs: item.browser?.tabURLs,
-            browserActiveTab: item.browser?.activeTabIndex)
+            browserActiveTab: item.browser?.activeTabIndex,
+            gridCols: item.gridCols,
+            gridRows: item.gridRows)
     }
 
     /// Resolve a saved connector's two endpoints, migrating older single-segment saves.
@@ -1181,6 +1308,8 @@ final class AppModel {
                                   lineArrowStart: item.lineArrowStart, lineArrowEnd: item.lineArrowEnd,
                                   lineNodes: lineEndpoints(from: item), lineBend: item.lineBend)
         created.userRenamed = item.renamed ?? false
+        created.gridCols = max(1, item.gridCols ?? 1)
+        created.gridRows = max(1, item.gridRows ?? 1)
         return created
     }
 

@@ -303,6 +303,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: "View")
+        viewMenu.addItem(withTitle: "Command Palette…",
+                         action: #selector(MainSplitViewController.showCommandPalette(_:)),
+                         keyEquivalent: "k")
+        viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Zoom In",
                          action: #selector(MainSplitViewController.zoomIn(_:)),
                          keyEquivalent: "+")

@@ -34,6 +34,10 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   folder, double-click renames, right-click for Open in Finder / Open in Tab / Copy Path / Copy
   Relative Path / Delete-to-Trash); open files edit with syntax highlighting + line numbers (via
   [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor)) and autosave to disk.
+  **Search** across the repo with match-case / whole-word / regex toggles and **Replace All**; click a
+  hit to jump to its line.
+- **Command palette (⌘K)** — a fuzzy launcher to create tools, run a tiling layout, jump to a project,
+  zoom, toggle snapping, undo/redo, or open Preferences, all from the keyboard.
 - **Diff** — see uncommitted changes (`git diff HEAD`) as a **changed-files list** (with per-file
   +/- counts) beside a GitHub-style **side-by-side** diff for the selected file.
 - **Annotations** — **sticky notes**, **free text**, and **lines / connectors** (orthogonal "elbow"
@@ -66,7 +70,8 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   straight to it; drag a folder to move the whole project.
 - **Live tiling** — set a project to **Grid** or **Columns** and it stays tidy on its own: it
   re-tiles whenever a window is added, removed, or moved, and dragging a window opens a highlighted
-  **placeholder** showing the slot it'll drop into (Freeform leaves windows wherever you put them).
+  **placeholder** showing the slot it'll drop into (Freeform leaves windows wherever you put them). In
+  Grid, **resize a window's edge into the next column/row** to make it **span multiple cells**.
 - **Selection** — a white outline shows what's selected; **Shift-click** to select multiple items
   at once (then DELETE removes the group, ESC deselects). DELETE removes the selection; **⌘Z / ⇧⌘Z**
   undo / redo create, delete, move/resize, and annotation edits.

@@ -123,6 +123,10 @@ struct ItemState: Codable {
     var browserURL: String?
     var browserTabs: [String]?
     var browserActiveTab: Int?
+
+    /// How many grid cells the window spans in a live grid project (1×1 unless resized to span).
+    var gridCols: Int?
+    var gridRows: Int?
 }
 
 // MARK: - Migration: per-project canvases (v1) -> one shared canvas (v2)

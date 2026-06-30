@@ -87,6 +87,9 @@ final class WindowView: NSView, NSTextFieldDelegate {
     /// A *move* drag began / updated — drives live tiling reorder (placeholder gap) in tiled projects.
     var onMoveBegan: (() -> Void)?
     var onMoveChanged: (() -> Void)?
+    /// A *resize* drag began / updated — drives live grid resize-to-span (placeholder) in grid projects.
+    var onResizeBegan: (() -> Void)?
+    var onResizeChanged: (() -> Void)?
     /// Double-click the header title committed a new name.
     var onRename: ((String) -> Void)?
 
@@ -380,6 +383,7 @@ final class WindowView: NSView, NSTextFieldDelegate {
         dragStartMouse = superview?.convert(event.locationInWindow, from: nil) ?? .zero
         dragStartFrame = frame
         if case .move = dragMode { onMoveBegan?() }
+        if case .resize = dragMode { onResizeBegan?() }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -420,6 +424,7 @@ final class WindowView: NSView, NSTextFieldDelegate {
                 f.size.height = h
             }
             frame = neighborSnapResize(f, edges: edges)
+            onResizeChanged?()
         case .none:
             break
         }

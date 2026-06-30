@@ -22,6 +22,12 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
   double-click rename, a right-click menu with Open in Finder / Open in Tab / Copy Path / Copy
   Relative Path / Delete-to-Trash), and edit files with syntax highlighting + line numbers; edits
   autosave to disk. The window title shows the selected repo.
+- **Code search & replace.** Find across the repo with **match-case / whole-word / regex** toggles;
+  click a result to open the file and **scroll to that line**. **Replace All** rewrites matches across
+  every file (regex templates in regex mode, literal otherwise).
+- **Command palette (⌘K).** A Spotlight-style fuzzy launcher: create any tool, run a tiling layout,
+  **jump to a project**, zoom, toggle snapping, undo/redo, or open Preferences — keyboard-first
+  (↑/↓ to move, ↩ to run, Esc to dismiss).
 - **Diff.** Uncommitted changes (`git diff HEAD`) as a **changed-files list** (with per-file +/-
   counts on the right) beside a GitHub-style **side-by-side** diff for the selected file (old vs.
   new, red / green, wrapped, with line-number gutters).
@@ -52,7 +58,9 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
   project and show a **project options bar** to rename it, change its color, and pick a **tiling
   mode** — **Freeform / Grid / Columns**. Grid and Columns are *live*: the project re-tiles as windows
   are added, removed, or moved, and dragging a window opens a highlighted **placeholder gap** showing
-  where it will drop. The options bar follows the project as you drag it.
+  where it will drop. In **Grid**, you can also **resize a window to span multiple cells** (drag its
+  edge into the next column/row — same placeholder highlight); the grid repacks around it. The options
+  bar follows the project as you drag it.
 - **Top bar + group tabs.** Replaced the macOS toolbar (and its system "glass" item grouping) and the
   bottom dock with a custom flat **top bar** (#141414, #383838 borders): a sidebar toggle, a **New
   Project** button, and a centered pill of group **tabs** — **Ideate**, **Review** (Diff / Velocity /

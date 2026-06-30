@@ -10,6 +10,7 @@ final class MainSplitViewController: NSSplitViewController {
     private let optionsBar = OptionsBar(frame: .zero)
     private weak var optionsBarWindow: WindowView?
     private weak var optionsBarProject: Project?   // set instead of optionsBarWindow for a project
+    private let commandPalette = CommandPalette()
 
     // Top-bar group tabs (each opens a custom dropdown of tools) + click-to-place state.
     private weak var snapButton: NSButton?
@@ -308,6 +309,50 @@ final class MainSplitViewController: NSSplitViewController {
 
     /// Tile the current project's windows into a uniform grid (⌥⌘T / View menu).
     @objc func tileWindows(_ sender: Any?) { model.tileCurrentProject() }
+
+    /// Open the ⌘K command palette: create tools, tile, jump to a project, zoom, etc.
+    @objc func showCommandPalette(_ sender: Any?) {
+        guard let window = view.window else { return }
+        var items: [PaletteItem] = []
+
+        let kinds: [(String, WorkItem.Kind)] = [
+            ("Terminal", .terminal), ("Document", .document), ("Code", .codeEditor),
+            ("Browser", .browser), ("Claude", .assistant), ("Diff", .diff),
+            ("Git Observer", .gitObserver), ("Git Graph", .gitGraph), ("Project Velocity", .projectVelocity),
+            ("Sticky Note", .sticky), ("Text", .freeText),
+        ]
+        for (name, kind) in kinds {
+            items.append(PaletteItem(title: "New \(name)", subtitle: "Create") { [weak self] in self?.newItemFromDock(kind) })
+        }
+        items.append(PaletteItem(title: "New Project", subtitle: "Create") { [weak self] in self?.newProject(nil) })
+
+        let tilings: [(String, TileLayout)] = [
+            ("Uniform Grid", .gridAuto), ("Grid 2×2", .grid(cols: 2)), ("Grid 3×3", .grid(cols: 3)),
+            ("Columns", .columns), ("Pack (keep sizes)", .pack),
+        ]
+        for (name, layout) in tilings {
+            items.append(PaletteItem(title: "Tile: \(name)", subtitle: "Arrange project") { [weak self] in self?.model.tileCurrentProject(layout: layout) })
+        }
+
+        for project in model.projects {
+            items.append(PaletteItem(title: project.name, subtitle: "Go to project") { [weak self] in
+                self?.model.selectProject(project)
+                self?.canvasVC.focusProject(project)
+            })
+        }
+
+        items.append(PaletteItem(title: "Zoom In", subtitle: "View") { [weak self] in self?.canvasVC.zoomIn() })
+        items.append(PaletteItem(title: "Zoom Out", subtitle: "View") { [weak self] in self?.canvasVC.zoomOut() })
+        items.append(PaletteItem(title: "Actual Size", subtitle: "View") { [weak self] in self?.canvasVC.zoomReset() })
+        items.append(PaletteItem(title: "Toggle Snapping", subtitle: "View") { [weak self] in self?.cycleSnap() })
+        items.append(PaletteItem(title: "Undo", subtitle: "Edit") { [weak self] in self?.undo(nil) })
+        items.append(PaletteItem(title: "Redo", subtitle: "Edit") { [weak self] in self?.redo(nil) })
+        items.append(PaletteItem(title: "Preferences…", subtitle: "App") {
+            (NSApp.delegate as? AppDelegate)?.showPreferences(nil)
+        })
+
+        commandPalette.show(items, over: window)
+    }
 
     /// The top-bar tile button drops a menu of layouts (Uniform / 2×2 / 3×3 / Columns / Pack).
     @objc private func showTileMenu(_ sender: NSButton) {

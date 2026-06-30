@@ -37,12 +37,30 @@ final class CodeFileModel: ObservableObject {
     @Published var language: CodeLanguage = .default
     @Published var fileID: Int = 0
     var fileURL: URL?
+    /// Set when a file is opened from a search hit — the editor scrolls to this line once built.
+    var jumpLine: Int?
+    lazy var jumpCoordinator = JumpCoordinator(model: self)
 
-    func open(url: URL) {
+    func open(url: URL, line: Int? = nil) {
         fileURL = url
         language = CodeLanguage.detectLanguageFrom(url: url)
         text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        jumpLine = line
         fileID += 1
+    }
+}
+
+/// Scrolls the freshly-built editor to `model.jumpLine` (set when opening from a search result). The
+/// editor is rebuilt per file via `.id`, so `prepareCoordinator` fires once per opened file.
+final class JumpCoordinator: TextViewCoordinator {
+    private weak var model: CodeFileModel?
+    init(model: CodeFileModel) { self.model = model }
+    func prepareCoordinator(controller: TextViewController) {
+        guard let line = model?.jumpLine, line > 0 else { return }
+        model?.jumpLine = nil
+        DispatchQueue.main.async { [weak controller] in
+            controller?.setCursorPositions([CursorPosition(line: line, column: 1)], scrollToVisible: true)
+        }
     }
 }
 
@@ -71,7 +89,8 @@ private struct CodeEditorBody: View {
                     tabWidth: 4),
                 peripherals: .init(showGutter: true, showMinimap: false)
             ),
-            state: $editorState)
+            state: $editorState,
+            coordinators: [model.jumpCoordinator])
     }
 }
 
@@ -97,6 +116,11 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
     // Search panel.
     private let searchPane = NSView()
     private let searchField = NSTextField()
+    private let replaceField = NSTextField()
+    private let caseButton = NSButton()    // match case
+    private let wordButton = NSButton()    // whole word
+    private let regexButton = NSButton()   // regular expression
+    private let replaceAllButton = NSButton()
     private let searchTable = NSTableView()
     private let searchScroll = NSScrollView()
     private struct SearchHit { let url: URL; let line: Int; let text: String }
@@ -288,6 +312,37 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         searchField.target = self
         searchField.action = #selector(runSearch)   // fires on Enter
 
+        replaceField.placeholderString = "Replace"
+        replaceField.translatesAutoresizingMaskIntoConstraints = false
+        replaceField.target = self
+        replaceField.action = #selector(replaceAll)   // Enter in the replace field replaces all
+
+        func configToggle(_ b: NSButton, _ title: String, _ tip: String) {
+            b.title = title
+            b.setButtonType(.pushOnPushOff)
+            b.bezelStyle = .smallSquare
+            b.font = .systemFont(ofSize: 10, weight: .medium)
+            b.toolTip = tip
+            b.target = self
+            b.action = #selector(runSearch)   // toggling re-runs the search
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        }
+        configToggle(caseButton, "Aa", "Match case")
+        configToggle(wordButton, "W", "Whole word")
+        configToggle(regexButton, ".*", "Regular expression")
+        let toggles = NSStackView(views: [caseButton, wordButton, regexButton])
+        toggles.orientation = .horizontal
+        toggles.spacing = 4
+        toggles.translatesAutoresizingMaskIntoConstraints = false
+
+        replaceAllButton.title = "Replace All"
+        replaceAllButton.bezelStyle = .rounded
+        replaceAllButton.controlSize = .small
+        replaceAllButton.target = self
+        replaceAllButton.action = #selector(replaceAll)
+        replaceAllButton.translatesAutoresizingMaskIntoConstraints = false
+
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hit"))
         col.resizingMask = .autoresizingMask
         searchTable.addTableColumn(col)
@@ -305,13 +360,23 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         searchScroll.scrollerStyle = .overlay
         searchScroll.translatesAutoresizingMaskIntoConstraints = false
 
-        searchPane.addSubview(searchField)
-        searchPane.addSubview(searchScroll)
+        for v in [searchField, toggles, replaceField, replaceAllButton, searchScroll] { searchPane.addSubview(v) }
         NSLayoutConstraint.activate([
             searchField.topAnchor.constraint(equalTo: searchPane.topAnchor, constant: 10),
             searchField.leadingAnchor.constraint(equalTo: searchPane.leadingAnchor, constant: 8),
             searchField.trailingAnchor.constraint(equalTo: searchPane.trailingAnchor, constant: -8),
-            searchScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+
+            toggles.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 6),
+            toggles.leadingAnchor.constraint(equalTo: searchPane.leadingAnchor, constant: 8),
+
+            replaceField.topAnchor.constraint(equalTo: toggles.bottomAnchor, constant: 8),
+            replaceField.leadingAnchor.constraint(equalTo: searchPane.leadingAnchor, constant: 8),
+            replaceField.trailingAnchor.constraint(equalTo: searchPane.trailingAnchor, constant: -8),
+
+            replaceAllButton.topAnchor.constraint(equalTo: replaceField.bottomAnchor, constant: 6),
+            replaceAllButton.trailingAnchor.constraint(equalTo: searchPane.trailingAnchor, constant: -8),
+
+            searchScroll.topAnchor.constraint(equalTo: replaceAllButton.bottomAnchor, constant: 8),
             searchScroll.leadingAnchor.constraint(equalTo: searchPane.leadingAnchor),
             searchScroll.trailingAnchor.constraint(equalTo: searchPane.trailingAnchor),
             searchScroll.bottomAnchor.constraint(equalTo: searchPane.bottomAnchor),
@@ -335,12 +400,26 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
 
     // MARK: - Search (find across the repo)
 
-    @objc private func runSearch() {
+    private static let searchSkip: Set<String> =
+        [".git", ".DS_Store", "node_modules", ".build", "DerivedData", ".next", "dist"]
+
+    /// Build the matcher for the current query + toggle state (plain / whole-word / regex, case).
+    private func currentRegex() -> NSRegularExpression? {
         let query = searchField.stringValue
-        guard let repoPath, !query.isEmpty else { searchResults = []; searchTable.reloadData(); return }
+        guard !query.isEmpty else { return nil }
+        var pattern = regexButton.state == .on ? query : NSRegularExpression.escapedPattern(for: query)
+        if wordButton.state == .on { pattern = "\\b\(pattern)\\b" }
+        let opts: NSRegularExpression.Options = caseButton.state == .on ? [] : [.caseInsensitive]
+        return try? NSRegularExpression(pattern: pattern, options: opts)
+    }
+
+    @objc private func runSearch() {
+        guard let repoPath, let regex = currentRegex() else {
+            searchResults = []; searchTable.reloadData(); return
+        }
         let root = URL(fileURLWithPath: repoPath)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let hits = CodeEditorPanel.search(query, in: root)
+            let hits = CodeEditorPanel.search(regex: regex, in: root)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.searchResults = hits
@@ -349,25 +428,23 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         }
     }
 
-    /// Case-insensitive substring search across the repo's text files (capped for responsiveness).
-    private static func search(_ query: String, in root: URL) -> [SearchHit] {
-        let skip: Set<String> = [".git", ".DS_Store", "node_modules", ".build", "DerivedData", ".next", "dist"]
-        let needle = query.lowercased()
+    /// Search across the repo's text files for lines matching `regex` (capped for responsiveness).
+    private static func search(regex: NSRegularExpression, in root: URL) -> [SearchHit] {
         var hits: [SearchHit] = []
         let fm = FileManager.default
         guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey],
                                      options: [.skipsHiddenFiles]) else { return [] }
         for case let url as URL in en {
-            if skip.contains(url.lastPathComponent) { en.skipDescendants(); continue }
+            if searchSkip.contains(url.lastPathComponent) { en.skipDescendants(); continue }
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             guard size <= 2_000_000, let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
             var lineNo = 0
             for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
                 lineNo += 1
-                if line.lowercased().contains(needle) {
-                    hits.append(SearchHit(url: url, line: lineNo,
-                                          text: line.trimmingCharacters(in: .whitespaces)))
+                let s = String(line)
+                if regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil {
+                    hits.append(SearchHit(url: url, line: lineNo, text: s.trimmingCharacters(in: .whitespaces)))
                     if hits.count >= 500 { return hits }
                 }
             }
@@ -375,10 +452,42 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         return hits
     }
 
+    /// Replace every match of the current query with the Replace field's text across the repo, then
+    /// re-run the search. In regex mode the replacement is a template ($1, …); otherwise it's literal.
+    @objc private func replaceAll() {
+        guard let repoPath, let regex = currentRegex() else { return }
+        let raw = replaceField.stringValue
+        let template = regexButton.state == .on ? raw : NSRegularExpression.escapedTemplate(for: raw)
+        let root = URL(fileURLWithPath: repoPath)
+        let openPath = editorModel.fileURL?.path
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fm = FileManager.default
+            guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey],
+                                         options: [.skipsHiddenFiles]) else { return }
+            for case let url as URL in en {
+                if CodeEditorPanel.searchSkip.contains(url.lastPathComponent) { en.skipDescendants(); continue }
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                guard size <= 2_000_000, let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                let updated = regex.stringByReplacingMatches(
+                    in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
+                if updated != text { try? updated.write(to: url, atomically: true, encoding: .utf8) }
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // The open file may have changed on disk — reload it (don't flushSave; that would clobber).
+                if let openPath { self.editorModel.open(url: URL(fileURLWithPath: openPath)) }
+                self.loadGitStatus()
+                self.runSearch()
+            }
+        }
+    }
+
     @objc private func searchResultClicked() {
         let row = searchTable.clickedRow >= 0 ? searchTable.clickedRow : searchTable.selectedRow
         guard searchResults.indices.contains(row) else { return }
-        openFile(searchResults[row].url)
+        let hit = searchResults[row]
+        openFile(hit.url, line: hit.line)
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { searchResults.count }
@@ -666,14 +775,14 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
 
     // MARK: - File open / save
 
-    private func openFile(_ url: URL) {
+    private func openFile(_ url: URL, line: Int? = nil) {
         flushSave()   // commit the previously-open file first
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         guard size <= Self.maxFileBytes, (try? String(contentsOf: url, encoding: .utf8)) != nil else {
             return   // skip binaries / very large files
         }
         loadingFile = true
-        editorModel.open(url: url)
+        editorModel.open(url: url, line: line)
         loadingFile = false
     }
 

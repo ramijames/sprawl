@@ -1,8 +1,15 @@
 import AppKit
 
-/// A floating, rounded toolbar pinned to the bottom-center of the canvas. A standalone Project
-/// button plus grouped "folders" (Apps / Git / Analytics) whose icons open a flyout menu of the
-/// windows they create in the focused project. Uses Lucide icons. Sizes itself to its content.
+/// One tool in a dock group: an icon + label and the action to arm when picked.
+struct DockTool {
+    let icon: [LucideIcon.Shape]
+    let tooltip: String
+    let onSelect: () -> Void
+}
+
+/// A floating, rounded toolbar pinned to the bottom-center of the canvas: a standalone Project
+/// button plus discrete groups (Ideate / Annotate / Review / Create / Manage). Clicking a group
+/// opens a custom sub-dock pill above it (not a macOS menu); picking a tool arms it for placement.
 final class FloatingDock: NSView {
     var onNewProject: (() -> Void)?
     var onNewTerminal: (() -> Void)?
@@ -11,13 +18,25 @@ final class FloatingDock: NSView {
     var onNewGitObserver: (() -> Void)?
     var onNewGitGraph: (() -> Void)?
     var onNewProjectVelocity: (() -> Void)?
+    var onNewDiff: (() -> Void)?
+    var onNewCodeEditor: (() -> Void)?
+    var onNewFigma: (() -> Void)?
     var onNewClaude: (() -> Void)?
+    var onNewSticky: (() -> Void)?
+    var onNewFreeText: (() -> Void)?
+    var onNewLine: (() -> Void)?
+
+    /// Show/toggle a sub-dock of `tools` above `anchor` (the clicked group button). Empty tools just
+    /// dismiss any open sub-dock (used by the not-yet-populated Ideate / Manage groups).
+    var onToggleSubDock: ((_ tools: [DockTool], _ anchor: NSView) -> Void)?
+
+    private var groupHolders: [GroupHolder] = []
+    private weak var annotateButton: DockButton?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         build()
     }
-
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         build()
@@ -35,140 +54,176 @@ final class FloatingDock: NSView {
         layer?.shadowOffset = CGSize(width: 0, height: -6)
         layer?.masksToBounds = false
 
-        let projectButton = DockButton(icon: LucideIcon.folderPlus, tooltip: "New Project") { [weak self] in self?.onNewProject?() }
+        let projectButton = DockButton(icon: LucideIcon.folderPlus, tooltip: "New Project", label: "Project") { [weak self] in self?.onNewProject?() }
 
-        let appsButton = makeFolderButton(icon: LucideIcon.layoutGrid, tooltip: "Apps") { [weak self] menu in
-            guard let self else { return }
-            menu.addItem(self.folderItem("New Terminal", LucideIcon.squareTerminal) { self.onNewTerminal?() })
-            menu.addItem(self.folderItem("New Document", LucideIcon.fileText) { self.onNewDocument?() })
-            menu.addItem(self.folderItem("New Browser", LucideIcon.globe) { self.onNewBrowser?() })
-            menu.addItem(self.folderItem("New Claude", LucideIcon.sparkles) { self.onNewClaude?() })
+        let ideate = makeGroupButton(icon: LucideIcon.sparkles, tooltip: "Ideate") { [] }
+        let annotate = makeGroupButton(icon: LucideIcon.stickyNote, tooltip: "Annotate") { [weak self] in
+            guard let self else { return [] }
+            return [DockTool(icon: LucideIcon.stickyNote, tooltip: "Sticky") { self.onNewSticky?() },
+                    DockTool(icon: LucideIcon.type, tooltip: "Text") { self.onNewFreeText?() },
+                    DockTool(icon: LucideIcon.spline, tooltip: "Arrow") { self.onNewLine?() }]
         }
-        let gitButton = makeFolderButton(icon: LucideIcon.gitBranch, tooltip: "Git") { [weak self] menu in
-            guard let self else { return }
-            menu.addItem(self.folderItem("New Git Observer", LucideIcon.gitCommit) { self.onNewGitObserver?() })
-            menu.addItem(self.folderItem("New Git Graph", LucideIcon.gitGraph) { self.onNewGitGraph?() })
+        annotateButton = annotate
+        let review = makeGroupButton(icon: LucideIcon.chartColumn, tooltip: "Review") { [weak self] in
+            guard let self else { return [] }
+            return [DockTool(icon: LucideIcon.diff, tooltip: "Diff") { self.onNewDiff?() },
+                    DockTool(icon: LucideIcon.gauge, tooltip: "Velocity") { self.onNewProjectVelocity?() },
+                    DockTool(icon: LucideIcon.gitCommit, tooltip: "Observer") { self.onNewGitObserver?() },
+                    DockTool(icon: LucideIcon.gitGraph, tooltip: "Graph") { self.onNewGitGraph?() }]
         }
-        let analyticsButton = makeFolderButton(icon: LucideIcon.chartColumn, tooltip: "Analytics") { [weak self] menu in
-            guard let self else { return }
-            menu.addItem(self.folderItem("New Project Velocity", LucideIcon.gauge) { self.onNewProjectVelocity?() })
+        let create = makeGroupButton(icon: LucideIcon.layoutGrid, tooltip: "Create") { [weak self] in
+            guard let self else { return [] }
+            return [DockTool(icon: LucideIcon.squareTerminal, tooltip: "Terminal") { self.onNewTerminal?() },
+                    DockTool(icon: LucideIcon.fileText, tooltip: "Document") { self.onNewDocument?() },
+                    DockTool(icon: LucideIcon.code, tooltip: "Code") { self.onNewCodeEditor?() },
+                    DockTool(icon: LucideIcon.figma, tooltip: "Figma") { self.onNewFigma?() },
+                    DockTool(icon: LucideIcon.globe, tooltip: "Browser") { self.onNewBrowser?() },
+                    DockTool(icon: LucideIcon.sparkles, tooltip: "Claude") { self.onNewClaude?() }]
         }
+        let manage = makeGroupButton(icon: LucideIcon.gitBranch, tooltip: "Manage") { [] }
 
+        let stack = NSStackView(views: [projectButton, makeDivider(), ideate, annotate, review, create, manage])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+        ])
+    }
+
+    /// Highlight the Annotate group (used at the end of onboarding to point at the tools).
+    func highlightApps() { annotateButton?.setHighlighted(true) }
+
+    private func makeDivider() -> NSView {
         let divider = NSView()
         divider.wantsLayer = true
         divider.layer?.backgroundColor = Palette.dockBorder.cgColor
         divider.translatesAutoresizingMaskIntoConstraints = false
         divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
         divider.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        return divider
+    }
 
-        let stack = NSStackView(views: [projectButton, divider, appsButton, gitButton, analyticsButton])
+    private func makeGroupButton(icon: [LucideIcon.Shape], tooltip: String,
+                                 tools: @escaping () -> [DockTool]) -> DockButton {
+        let holder = GroupHolder(tools: tools)
+        let button = DockButton(icon: icon, tooltip: tooltip) { [weak self, weak holder] in
+            guard let self, let holder, let btn = holder.button else { return }
+            self.annotateButton?.setHighlighted(false)
+            self.onToggleSubDock?(holder.tools(), btn)
+        }
+        holder.button = button
+        groupHolders.append(holder)
+        return button
+    }
+}
+
+/// Retains a group button + its tool-list closure (the button is created after the closure).
+private final class GroupHolder {
+    weak var button: DockButton?
+    let tools: () -> [DockTool]
+    init(tools: @escaping () -> [DockTool]) { self.tools = tools }
+}
+
+/// A small floating pill of tool buttons shown above a dock group. Picking a tool runs its action
+/// and dismisses (via `onPick`).
+final class SubDock: NSView {
+    init(tools: [DockTool], onPick: @escaping () -> Void) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        appearance = NSAppearance(named: .darkAqua)
+        layer?.backgroundColor = Palette.dockFill.cgColor
+        layer?.cornerRadius = 14
+        layer?.borderWidth = 1
+        layer?.borderColor = Palette.dockBorder.cgColor
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.45
+        layer?.shadowRadius = 16
+        layer?.shadowOffset = CGSize(width: 0, height: -4)
+        layer?.masksToBounds = false
+
+        let buttons = tools.map { tool in
+            DockButton(icon: tool.icon, tooltip: tool.tooltip) { tool.onSelect(); onPick() }
+        }
+        let stack = NSStackView(views: buttons)
         stack.orientation = .horizontal
         stack.alignment = .centerY
-        stack.spacing = 6
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
         ])
     }
-
-    /// A DockButton that, when clicked, builds a fresh dark menu (via `populate`) and pops it up
-    /// above itself. The dock sits at the screen bottom, so NSMenu auto-flips and opens upward.
-    private func makeFolderButton(icon: [LucideIcon.Shape], tooltip: String,
-                                  populate: @escaping (NSMenu) -> Void) -> DockButton {
-        let holder = MenuHolder(populate: populate)
-        let button = DockButton(icon: icon, tooltip: tooltip, caret: true) { [weak self] in
-            self?.popFolderMenu(holder)
-        }
-        holder.button = button
-        return button
-    }
-
-    private func popFolderMenu(_ holder: MenuHolder) {
-        guard let button = holder.button, let window = button.window else { return }
-        let menu = NSMenu()
-        menu.appearance = NSAppearance(named: .darkAqua)
-        menu.autoenablesItems = false
-        holder.populate(menu)
-        // Place the menu in SCREEN coordinates so it sits fully *above* the dock (which lives at the
-        // bottom of the screen). Menus grow downward from their top-left, so we put the top-left a
-        // full menu-height above the button's top edge → the menu's bottom lands just above it.
-        let menuHeight = menu.size.height > 0 ? menu.size.height : CGFloat(menu.items.count) * 24 + 12
-        let buttonTopInWindow = button.convert(NSPoint(x: 0, y: button.bounds.height), to: nil)
-        let buttonTopOnScreen = window.convertPoint(toScreen: buttonTopInWindow)
-        let topLeft = NSPoint(x: buttonTopOnScreen.x, y: buttonTopOnScreen.y + menuHeight + 6)
-        menu.popUp(positioning: nil, at: topLeft, in: nil)   // in: nil → `at` is screen coordinates
-    }
-
-    /// A dark menu item carrying a Lucide icon and a click closure.
-    private func folderItem(_ title: String, _ icon: [LucideIcon.Shape],
-                            _ action: @escaping () -> Void) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: #selector(MenuAction.fire), keyEquivalent: "")
-        let target = MenuAction(action)
-        item.target = target
-        item.representedObject = target          // retain the target for the item's lifetime
-        item.image = LucideIcon.image(icon, size: 15, color: Palette.dockIcon)
-        return item
-    }
-}
-
-/// Holds a folder button + its menu-populating closure (the button is created after the closure).
-private final class MenuHolder {
-    weak var button: DockButton?
-    let populate: (NSMenu) -> Void
-    init(populate: @escaping (NSMenu) -> Void) { self.populate = populate }
-}
-
-/// Bridges a plain closure to an `@objc` menu-item action.
-private final class MenuAction: NSObject {
-    private let action: () -> Void
-    init(_ action: @escaping () -> Void) { self.action = action; super.init() }
-    @objc func fire() { action() }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }
 
 /// A square icon button with a rounded hover highlight, for the floating dock.
 final class DockButton: NSButton {
     private let onClick: () -> Void
     private var trackingArea: NSTrackingArea?
+    private var isActive = false
 
-    init(icon: [LucideIcon.Shape], tooltip: String, caret: Bool = false, action: @escaping () -> Void) {
+    init(icon: [LucideIcon.Shape], tooltip: String, label: String? = nil,
+         caret: Bool = false, action: @escaping () -> Void) {
         onClick = action
-        let width: CGFloat = caret ? 52 : 38   // folder buttons are wider to fit the disclosure caret
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 38))
+        super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 9
         isBordered = false
         bezelStyle = .regularSquare
-        imagePosition = .imageOnly
-        image = caret ? DockButton.iconWithCaret(icon) : LucideIcon.image(icon, size: 22, color: Palette.dockIcon)
+        image = DockButton.paddedIcon(icon, bottomPad: 7)   // transparent strip = gap above the caption
+        imagePosition = .imageAbove   // icon on top, small caption below
+        imageHugsTitle = true
+        let caption = NSMutableParagraphStyle()
+        caption.alignment = .center
+        attributedTitle = NSAttributedString(string: label ?? tooltip, attributes: [
+            .font: NSFont.systemFont(ofSize: 9.5, weight: .regular),
+            .foregroundColor: Palette.dockIcon.withAlphaComponent(0.35),
+            .paragraphStyle: caption,
+        ])
         toolTip = tooltip
         target = self
         self.action = #selector(clicked)
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: width).isActive = true
-        heightAnchor.constraint(equalToConstant: 38).isActive = true
+        widthAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
+        heightAnchor.constraint(equalToConstant: 54).isActive = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    /// Compose a Lucide icon with a small down-caret to its right (marks a button that opens a menu).
-    private static func iconWithCaret(_ icon: [LucideIcon.Shape]) -> NSImage {
-        let iconSize: CGFloat = 22, caretSize: CGFloat = 9, gap: CGFloat = 3
-        let size = NSSize(width: iconSize + gap + caretSize, height: 22)
-        let image = NSImage(size: size)
+    /// A Lucide icon with transparent padding below it, so `.imageAbove` leaves a gap before the caption.
+    private static func paddedIcon(_ icon: [LucideIcon.Shape], bottomPad: CGFloat) -> NSImage {
+        let s: CGFloat = 22
+        let image = NSImage(size: NSSize(width: s, height: s + bottomPad))
         image.lockFocus()
-        LucideIcon.image(icon, size: iconSize, color: Palette.dockIcon)
-            .draw(in: NSRect(x: 0, y: (size.height - iconSize) / 2, width: iconSize, height: iconSize))
-        LucideIcon.image(LucideIcon.chevronDown, size: caretSize, color: Palette.dockIcon)
-            .draw(in: NSRect(x: iconSize + gap, y: (size.height - caretSize) / 2, width: caretSize, height: caretSize))
+        LucideIcon.image(icon, size: s, color: Palette.dockIcon)
+            .draw(in: NSRect(x: 0, y: bottomPad, width: s, height: s))   // glyph at the top, gap below
         image.unlockFocus()
         return image
     }
 
     @objc private func clicked() { onClick() }
+
+    /// Draw a white rounded outline around the button (an onboarding spotlight).
+    func setHighlighted(_ on: Bool) {
+        layer?.borderWidth = on ? 2 : 0
+        layer?.borderColor = NSColor.white.cgColor
+    }
+
+    /// Keep a lighter background to mark the button as the active tool (e.g. line drawing armed).
+    func setActive(_ on: Bool) {
+        isActive = on
+        layer?.backgroundColor = on ? Palette.dockHover.cgColor : NSColor.clear.cgColor
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -183,6 +238,6 @@ final class DockButton: NSButton {
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.backgroundColor = isActive ? Palette.dockHover.cgColor : NSColor.clear.cgColor
     }
 }

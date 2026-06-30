@@ -55,14 +55,14 @@ struct DocumentEditorView: View {
     var body: some View {
         SourceEditor(
             $model.text,
-            language: model.language,
+            language: .default,   // plain text for now — no syntax highlighting
             configuration: SourceEditorConfiguration(
                 appearance: .init(
                     theme: .endlessDark,
                     font: .monospacedSystemFont(ofSize: 12, weight: .regular),
                     wrapLines: model.wrapLines,
                     tabWidth: 4),
-                peripherals: .init(showMinimap: false)
+                peripherals: .init(showGutter: false, showMinimap: false)   // no line numbers
             ),
             state: $editorState)
     }
@@ -74,12 +74,12 @@ final class DocumentPanel: NSObject {
     let model: DocumentModel
     private let hostingView: NSHostingView<DocumentEditorView>
     private let container = NSView()
-    private let functionsBar = NSView()
     private let editorClip = NSView()
-    private let openButton = NSButton()
-    private let saveButton = NSButton()
-    private let wrapButton = NSButton()
     private var textObserver: AnyCancellable?
+
+    /// Soft-wrap state (mirrored from the model); toggled from the options bar.
+    var wrapLines: Bool { model.wrapLines }
+    func toggleWrap() { model.wrapLines.toggle() }
 
     /// The editor text changed — request an autosave of the workspace snapshot.
     var onTextChange: (() -> Void)? {
@@ -112,35 +112,9 @@ final class DocumentPanel: NSObject {
         container.wantsLayer = true
         container.layer?.backgroundColor = Palette.editorBackground.cgColor
 
-        functionsBar.wantsLayer = true
-        functionsBar.layer?.backgroundColor = Palette.panelBody.cgColor
-        functionsBar.translatesAutoresizingMaskIntoConstraints = false
-
-        // Open / Save route through the responder chain to MainSplitViewController (same as ⌘O/⌘S);
-        // clicking the button selects this document first, so Save targets the right one.
-        configureBarButton(openButton, symbol: "folder", tooltip: "Open File (⌘O)")
-        openButton.target = nil
-        openButton.action = #selector(MainSplitViewController.openDocument(_:))
-        configureBarButton(saveButton, symbol: "square.and.arrow.down", tooltip: "Save (⌘S)")
-        saveButton.target = nil
-        saveButton.action = #selector(MainSplitViewController.saveDocument(_:))
-
-        let wrapIcon = LucideIcon.image(LucideIcon.textWrap, size: 17, color: .white)
-        wrapIcon.isTemplate = true   // tinted via contentTintColor to show on/off
-        wrapButton.image = wrapIcon
-        wrapButton.imagePosition = .imageOnly
-        wrapButton.isBordered = false
-        wrapButton.toolTip = "Word Wrap"
-        wrapButton.target = self
-        wrapButton.action = #selector(toggleWrap)
-        wrapButton.translatesAutoresizingMaskIntoConstraints = false
-
-        functionsBar.addSubview(openButton)
-        functionsBar.addSubview(saveButton)
-        functionsBar.addSubview(wrapButton)
-
-        // Clip the editor to a rounded-bottom rect so overscrolled content (the gutter + its
-        // background) can't spill past the window's rounded corners when you scroll too far.
+        // Clip the editor to a rounded rect so overscrolled content (the gutter + its background)
+        // can't spill past the window's rounded corners when you scroll too far. (Open / Save / Wrap
+        // controls now live in the floating options bar instead of an in-panel functions bar.)
         editorClip.wantsLayer = true
         editorClip.layer?.masksToBounds = true
         editorClip.layer?.cornerRadius = 10
@@ -149,27 +123,10 @@ final class DocumentPanel: NSObject {
 
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         editorClip.addSubview(hostingView)
-        container.addSubview(functionsBar)
         container.addSubview(editorClip)
 
         NSLayoutConstraint.activate([
-            functionsBar.topAnchor.constraint(equalTo: container.topAnchor),
-            functionsBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            functionsBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            functionsBar.heightAnchor.constraint(equalToConstant: 32),
-
-            openButton.leadingAnchor.constraint(equalTo: functionsBar.leadingAnchor, constant: 8),
-            openButton.centerYAnchor.constraint(equalTo: functionsBar.centerYAnchor),
-            openButton.widthAnchor.constraint(equalToConstant: 24),
-            saveButton.leadingAnchor.constraint(equalTo: openButton.trailingAnchor, constant: 2),
-            saveButton.centerYAnchor.constraint(equalTo: functionsBar.centerYAnchor),
-            saveButton.widthAnchor.constraint(equalToConstant: 24),
-
-            wrapButton.trailingAnchor.constraint(equalTo: functionsBar.trailingAnchor, constant: -8),
-            wrapButton.centerYAnchor.constraint(equalTo: functionsBar.centerYAnchor),
-            wrapButton.widthAnchor.constraint(equalToConstant: 24),
-
-            editorClip.topAnchor.constraint(equalTo: functionsBar.bottomAnchor),
+            editorClip.topAnchor.constraint(equalTo: container.topAnchor),
             editorClip.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             editorClip.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             editorClip.bottomAnchor.constraint(equalTo: container.bottomAnchor),
@@ -179,25 +136,6 @@ final class DocumentPanel: NSObject {
             hostingView.trailingAnchor.constraint(equalTo: editorClip.trailingAnchor),
             hostingView.bottomAnchor.constraint(equalTo: editorClip.bottomAnchor),
         ])
-        updateWrapButton()
-    }
-
-    private func configureBarButton(_ button: NSButton, symbol: String, tooltip: String) {
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)
-        button.imagePosition = .imageOnly
-        button.isBordered = false
-        button.contentTintColor = Palette.sidebarText
-        button.toolTip = tooltip
-        button.translatesAutoresizingMaskIntoConstraints = false
-    }
-
-    @objc private func toggleWrap() {
-        model.wrapLines.toggle()
-        updateWrapButton()
-    }
-
-    private func updateWrapButton() {
-        wrapButton.contentTintColor = model.wrapLines ? .controlAccentColor : Palette.sidebarText
     }
 }
 

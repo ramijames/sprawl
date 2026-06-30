@@ -7,7 +7,7 @@ import QuartzCore
 /// Note on coordinates: the superview (`CanvasView`) is flipped (origin top-left, y grows
 /// downward), so drag/resize math is done in the superview's coordinate space. The panel
 /// itself is a standard (non-flipped) view for its own internal layout.
-final class WindowView: NSView {
+final class WindowView: NSView, NSTextFieldDelegate {
     static let headerHeight: CGFloat = 30
     /// Edge band that triggers a resize on hover/drag.
     static let resizeMargin: CGFloat = 12
@@ -37,14 +37,59 @@ final class WindowView: NSView {
     }
     /// Whether this item is selected — draws a white outline around the panel.
     var isSelected: Bool = false {
-        didSet { guard isSelected != oldValue else { return }; needsDisplay = true }
+        didSet {
+            guard isSelected != oldValue else { return }
+            needsDisplay = true
+            onSelectionChange?(isSelected)
+            if !isSelected { onDeselected?() }   // annotations stop editing when deselected
+        }
+    }
+    /// Called when the panel goes from selected to not-selected (used to end annotation editing).
+    var onDeselected: (() -> Void)?
+    /// Called whenever selection changes (both directions) — used by lines to redraw their handles.
+    var onSelectionChange: ((Bool) -> Void)?
+    /// When set (line annotations), only points the closure marks "live" (the stroke / a handle)
+    /// grab clicks — the rest of the transparent bounding box passes through to windows behind.
+    /// The point is in this view's own coordinate space.
+    var bodyHitTest: ((NSPoint) -> Bool)?
+    /// Skip the chrome-less hover backdrop + selection outline (lines draw their own selection).
+    var suppressBackdrop = false
+    /// When true, the panel skips its opaque body fill, border, and title — used by glass panels
+    /// (e.g. sticky notes) that supply their own translucent background.
+    var transparentBody = false {
+        didSet { guard transparentBody != oldValue else { return }; needsDisplay = true }
+    }
+    /// Chrome-less (free text): no close button/header, content fills the frame, the whole panel is
+    /// a drag handle, double-click activates editing, and edge-resize is disabled (it auto-sizes).
+    var chromeless = false {
+        didSet { guard chromeless != oldValue else { return }; needsLayout = true; needsDisplay = true }
+    }
+    /// Whether edge/corner resize is enabled (off for auto-sizing free text).
+    var resizable = true
+    /// Corner radius for the body/glass/selection (smaller for annotations).
+    var bodyCornerRadius: CGFloat = 16 {
+        didSet { guard bodyCornerRadius != oldValue else { return }; needsLayout = true; needsDisplay = true }
+    }
+    /// Double-click on a chrome-less panel (e.g. to enter Free Text edit mode).
+    var onActivate: (() -> Void)?
+    /// Mouse is over the panel — drives the free-text hover backdrop.
+    private var isHovered = false {
+        didSet { guard isHovered != oldValue, chromeless else { return }; needsDisplay = true }
     }
     var onClose: ((WindowView) -> Void)?
     var onFocus: ((WindowView) -> Void)?
     /// Called when the panel is moved or resized (so the canvas can redraw the project frame).
     var onGeometryChange: (() -> Void)?
+    /// Secondary geometry hook (e.g. to keep a floating options bar pinned above the panel).
+    var onGeometryChange2: (() -> Void)?
+    /// A move/resize drag finished — reports the before/after frame for one undoable step.
+    var onGeometryCommitted: ((NSRect, NSRect) -> Void)?
+    /// Double-click the header title committed a new name.
+    var onRename: ((String) -> Void)?
 
     private let closeButton = NSButton()
+    private weak var titleEditor: NSTextField?
+    private var isEditingTitle = false
 
     private struct Edge: OptionSet {
         let rawValue: Int
@@ -108,6 +153,12 @@ final class WindowView: NSView {
         needsLayout = true
         needsDisplay = true
         onGeometryChange?()
+        onGeometryChange2?()
+    }
+
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        super.setFrameOrigin(newOrigin)
+        onGeometryChange2?()   // keep a pinned options bar following the panel as it moves
     }
 
     override func layout() {
@@ -117,6 +168,12 @@ final class WindowView: NSView {
         let header = Self.headerHeight
         let dot: CGFloat = 13
         closeButton.frame = NSRect(x: 11, y: b.height - header + (header - dot) / 2, width: dot, height: dot)
+        if chromeless {
+            // No header/close: the content fills the whole frame.
+            contentContainer.frame = b
+            layer?.shadowPath = CGPath(roundedRect: b, cornerWidth: bodyCornerRadius, cornerHeight: bodyCornerRadius, transform: nil)
+            return
+        }
         // Content sits inside the panel with padding on the sides/bottom and below the header.
         contentContainer.frame = NSRect(
             x: pad,
@@ -125,11 +182,30 @@ final class WindowView: NSView {
             height: max(0, b.height - header - pad))
         // Explicit shadow path so Core Animation doesn't recompute the shadow from the layer's
         // content every composite — the main cause of janky zoom/drag with several panels.
-        layer?.shadowPath = CGPath(roundedRect: b, cornerWidth: 16, cornerHeight: 16, transform: nil)
+        layer?.shadowPath = CGPath(roundedRect: b, cornerWidth: bodyCornerRadius, cornerHeight: bodyCornerRadius, transform: nil)
     }
 
     override var isOpaque: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Whether selecting this panel should pull keyboard focus to the window itself (true for
+    /// non-text panels like annotations / lines / git widgets, so Delete/Escape act on the selection
+    /// instead of being swallowed by a previously-focused text editor). Text panels leave focus in
+    /// their content so typing keeps working.
+    var focusable = false
+    override var acceptsFirstResponder: Bool { focusable }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let result = super.hitTest(point)
+        guard let bodyHitTest else { return result }
+        // A real subview (e.g. a line's node handle) claimed the point — let it through.
+        if let result, result !== self { return result }
+        // Otherwise only grab the click if it's on the live line body; empty padding passes through.
+        // AppKit passes `point` in the *superview's* coordinate space (unlike UIKit), so convert it
+        // to this view's local space — which equals the line content view's space (chromeless,
+        // origin-aligned, non-flipped).
+        return bodyHitTest(convert(point, from: superview)) ? self : nil
+    }
 
     /// Host a terminal/editor view, filling the content area below the title bar.
     func setContent(_ view: NSView) {
@@ -140,31 +216,96 @@ final class WindowView: NSView {
         contentContainer.addSubview(view)
     }
 
+    /// Install a full-window translucent background (a glass sticky's frosted pastel) behind all
+    /// chrome: makes the body transparent, clears the content backing so the glass shows through,
+    /// and rounds the corners. The view is inserted at the back so the close dot/editor stay on top.
+    func setGlassBackground(_ view: NSView) {
+        transparentBody = true
+        contentContainer.layer?.backgroundColor = NSColor.clear.cgColor
+        view.wantsLayer = true
+        view.layer?.cornerRadius = bodyCornerRadius
+        view.layer?.masksToBounds = true
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view, positioned: .below, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    /// Make the panel chrome-less and fully transparent (no body fill/border/title, clear content
+    /// backing) — used by Free Text annotations that float directly on the canvas.
+    func makeTransparent() {
+        transparentBody = true
+        contentContainer.layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    /// Chrome-less annotation panel: transparent + no close/header, content fills the frame, the
+    /// whole panel drags, double-click activates editing. Free text disables resize (it auto-sizes);
+    /// sticky keeps it. `cornerRadius` tunes the body/glass/selection rounding.
+    func makeChromeless(resizable: Bool = false, cornerRadius: CGFloat = 6) {
+        makeTransparent()
+        closeButton.isHidden = true
+        chromeless = true
+        self.resizable = resizable
+        bodyCornerRadius = cornerRadius
+        needsLayout = true
+    }
+
+    /// Mount a small control (e.g. a sticky's color swatches) centered in the header strip, above
+    /// the glass so it's clickable. Drag/rename still work on the rest of the header.
+    func addHeaderAccessory(_ view: NSView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.centerXAnchor.constraint(equalTo: centerXAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            view.heightAnchor.constraint(equalToConstant: 16),
+        ])
+    }
+
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        let radius: CGFloat = 16
+        let radius = bodyCornerRadius
         let body = bounds.insetBy(dx: 0.5, dy: 0.5)
         let bodyPath = NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius)
 
         // Thin chrome: a filled body and a single hairline border — no separate title-bar band.
-        // Selection just recolors that 1px border.
-        Palette.panelBody.setFill()
-        bodyPath.fill()
-        (isSelected ? Palette.panelBorderSelected : Palette.panelBorder).setStroke()
-        bodyPath.lineWidth = 1
-        bodyPath.stroke()
+        // Selection just recolors that 1px border. Glass panels (transparentBody) draw neither,
+        // and only get a selection outline. Free text (chromeless) shows a darkened hover backdrop.
+        if !transparentBody {
+            Palette.panelBody.setFill()
+            bodyPath.fill()
+            (isSelected ? Palette.panelBorderSelected : Palette.panelBorder).setStroke()
+            bodyPath.lineWidth = 1
+            bodyPath.stroke()
+        } else {
+            if chromeless && isHovered && !suppressBackdrop {
+                NSColor(white: 0, alpha: 0.22).setFill()
+                bodyPath.fill()
+            }
+            if isSelected && !suppressBackdrop {
+                Palette.panelBorderSelected.setStroke()
+                bodyPath.lineWidth = 1
+                bodyPath.stroke()
+            }
+        }
 
-        // Centered title in the header strip, kept clear of the close dot.
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: isSelected ? Palette.panelHeaderTextSelected : Palette.panelHeaderText,
-        ]
-        let textSize = title.size(withAttributes: attrs)
-        let textOrigin = NSPoint(
-            x: max(closeButton.frame.maxX + 8, (bounds.width - textSize.width) / 2),
-            y: bounds.height - Self.headerHeight + (Self.headerHeight - textSize.height) / 2)
-        title.draw(at: textOrigin, withAttributes: attrs)
+        // Centered title in the header strip, kept clear of the close dot (hidden while editing).
+        if !isEditingTitle && !transparentBody {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: isSelected ? Palette.panelHeaderTextSelected : Palette.panelHeaderText,
+            ]
+            let textSize = title.size(withAttributes: attrs)
+            let textOrigin = NSPoint(
+                x: max(closeButton.frame.maxX + 8, (bounds.width - textSize.width) / 2),
+                y: bounds.height - Self.headerHeight + (Self.headerHeight - textSize.height) / 2)
+            title.draw(at: textOrigin, withAttributes: attrs)
+        }
 
         drawResizeIndicator()
     }
@@ -217,10 +358,18 @@ final class WindowView: NSView {
     override func mouseDown(with event: NSEvent) {
         onFocus?(self)
         let local = convert(event.locationInWindow, from: nil)
-        let edges = edgeMask(at: local)
+        let edges = edgeMask(at: local)   // [] when !resizable
         if !edges.isEmpty {
             dragMode = .resize(edges)
+        } else if chromeless {
+            // Annotations: the whole panel drags; double-click activates editing (handled by the panel).
+            if event.clickCount == 2 { onActivate?(); dragMode = .none } else { dragMode = .move }
         } else if local.y >= bounds.height - Self.headerHeight {
+            if event.clickCount == 2 {   // double-click the header title → rename
+                beginTitleEdit()
+                dragMode = .none
+                return
+            }
             dragMode = .move
         } else {
             dragMode = .none
@@ -235,7 +384,6 @@ final class WindowView: NSView {
         let dx = current.x - dragStartMouse.x
         let dy = current.y - dragStartMouse.y
 
-        let grid = (superview as? CanvasView)?.snapGrid ?? 0
         // Suppress Core Animation's implicit position/bounds animation so the panel tracks the
         // cursor exactly instead of easing a frame behind it.
         CATransaction.begin()
@@ -243,8 +391,9 @@ final class WindowView: NSView {
         defer { CATransaction.commit() }
         switch dragMode {
         case .move:
-            frame.origin = NSPoint(x: CanvasView.snap(dragStartFrame.origin.x + dx, to: grid),
-                                   y: CanvasView.snap(dragStartFrame.origin.y + dy, to: grid))
+            let proposed = NSRect(origin: NSPoint(x: dragStartFrame.origin.x + dx, y: dragStartFrame.origin.y + dy),
+                                  size: frame.size)
+            frame.origin = neighborSnapOrigin(proposed)
             onGeometryChange?()
         case .resize(let edges):
             var f = dragStartFrame
@@ -265,37 +414,93 @@ final class WindowView: NSView {
                 f.origin.y = dragStartFrame.maxY - h
                 f.size.height = h
             }
-            frame = snappedResize(f, edges: edges, grid: grid)
+            frame = neighborSnapResize(f, edges: edges)
         case .none:
             break
         }
     }
 
-    /// Snap the edges being dragged to the grid (no-op when snapping is off), keeping the opposite
-    /// edge fixed and respecting the minimum size.
-    private func snappedResize(_ rect: NSRect, edges: Edge, grid: CGFloat) -> NSRect {
-        guard grid > 0 else { return rect }
+    // MARK: - Smart-guide snapping (align to nearby windows)
+
+    /// Snapping is on whenever the canvas grid toggle is on (the grid magnitude drives line/placement
+    /// snapping; windows align to each other instead of an absolute grid).
+    private var snappingOn: Bool { ((superview as? CanvasView)?.snapGrid ?? 0) > 0 }
+
+    /// Frames of the other windows on the canvas (snap targets).
+    private func neighborFrames() -> [NSRect] {
+        (superview?.subviews ?? []).compactMap {
+            ($0 as? WindowView).flatMap { v in (v !== self && !v.isHidden) ? v.frame : nil }
+        }
+    }
+
+    /// ~8 on-screen points, expressed in canvas units (so the magnet feels the same at any zoom).
+    private var snapThreshold: CGFloat {
+        let mag = (superview as? CanvasView)?.enclosingScrollView?.magnification ?? 1
+        return 8 / max(mag, 0.01)
+    }
+
+    /// The smallest target-minus-value offset within `threshold`, or nil if none is close enough.
+    private func nearestOffset(_ values: [CGFloat], to targets: [CGFloat], threshold: CGFloat) -> CGFloat? {
+        var best: CGFloat?
+        for v in values {
+            for t in targets {
+                let d = t - v
+                if abs(d) <= threshold, abs(d) < (best.map { abs($0) } ?? .greatestFiniteMagnitude) { best = d }
+            }
+        }
+        return best
+    }
+
+    /// Align the moving window's left/center/right (and top/middle/bottom) to nearby windows' edges
+    /// and centers; otherwise move freely (no absolute grid).
+    private func neighborSnapOrigin(_ proposed: NSRect) -> NSPoint {
+        guard snappingOn else { return proposed.origin }
+        let others = neighborFrames()
+        guard !others.isEmpty else { return proposed.origin }
+        let t = snapThreshold
+        var origin = proposed.origin
+        if let off = nearestOffset([proposed.minX, proposed.midX, proposed.maxX],
+                                   to: others.flatMap { [$0.minX, $0.midX, $0.maxX] }, threshold: t) {
+            origin.x += off
+        }
+        if let off = nearestOffset([proposed.minY, proposed.midY, proposed.maxY],
+                                   to: others.flatMap { [$0.minY, $0.midY, $0.maxY] }, threshold: t) {
+            origin.y += off
+        }
+        return origin
+    }
+
+    /// Align a dragged edge to nearby windows' matching edges/centers, keeping the opposite edge fixed.
+    private func neighborSnapResize(_ rect: NSRect, edges: Edge) -> NSRect {
+        guard snappingOn else { return rect }
+        let others = neighborFrames()
+        guard !others.isEmpty else { return rect }
+        let t = snapThreshold
+        let xs = others.flatMap { [$0.minX, $0.midX, $0.maxX] }
+        let ys = others.flatMap { [$0.minY, $0.midY, $0.maxY] }
         var r = rect
-        if edges.contains(.left) {
-            let right = r.maxX
-            r.origin.x = CanvasView.snap(r.minX, to: grid)
-            r.size.width = max(Self.minSize.width, right - r.origin.x)
+        if edges.contains(.left), let off = nearestOffset([r.minX], to: xs, threshold: t) {
+            let right = r.maxX; r.origin.x = r.minX + off; r.size.width = max(Self.minSize.width, right - r.origin.x)
         }
-        if edges.contains(.right) {
-            r.size.width = max(Self.minSize.width, CanvasView.snap(r.maxX, to: grid) - r.minX)
+        if edges.contains(.right), let off = nearestOffset([r.maxX], to: xs, threshold: t) {
+            r.size.width = max(Self.minSize.width, (r.maxX + off) - r.minX)
         }
-        if edges.contains(.top) {
-            let bottom = r.maxY
-            r.origin.y = CanvasView.snap(r.minY, to: grid)
-            r.size.height = max(Self.minSize.height, bottom - r.origin.y)
+        if edges.contains(.top), let off = nearestOffset([r.minY], to: ys, threshold: t) {
+            let bottom = r.maxY; r.origin.y = r.minY + off; r.size.height = max(Self.minSize.height, bottom - r.origin.y)
         }
-        if edges.contains(.bottom) {
-            r.size.height = max(Self.minSize.height, CanvasView.snap(r.maxY, to: grid) - r.minY)
+        if edges.contains(.bottom), let off = nearestOffset([r.maxY], to: ys, threshold: t) {
+            r.size.height = max(Self.minSize.height, (r.maxY + off) - r.minY)
         }
         return r
     }
 
     override func mouseUp(with event: NSEvent) {
+        switch dragMode {
+        case .move, .resize:
+            if frame != dragStartFrame { onGeometryCommitted?(dragStartFrame, frame) }
+        case .none:
+            break
+        }
         dragMode = .none
     }
 
@@ -304,7 +509,59 @@ final class WindowView: NSView {
         return false
     }
 
+    // MARK: - Rename (double-click the header title)
+
+    private func beginTitleEdit() {
+        guard !isEditingTitle else { return }
+        let header = Self.headerHeight
+        let x = closeButton.frame.maxX + 8
+        let editRect = NSRect(x: x, y: bounds.height - header + 4,
+                              width: max(40, bounds.width - x - 12), height: header - 8)
+        let field = NSTextField(frame: editRect)
+        field.stringValue = title
+        field.font = .systemFont(ofSize: 12, weight: .medium)
+        field.textColor = Palette.panelTitleText
+        field.drawsBackground = true
+        field.backgroundColor = Palette.editorBackground
+        field.isBordered = false
+        field.isBezeled = false
+        field.focusRingType = .none
+        field.usesSingleLineMode = true
+        field.alignment = .center
+        field.wantsLayer = true
+        field.layer?.cornerRadius = 5
+        field.delegate = self
+        field.autoresizingMask = [.width, .minYMargin]
+        addSubview(field)
+        titleEditor = field
+        isEditingTitle = true
+        needsDisplay = true
+        window?.makeFirstResponder(field)
+        field.currentEditor()?.selectedRange = NSRange(location: 0, length: (title as NSString).length)
+    }
+
+    private func endTitleEdit(commit: Bool) {
+        guard isEditingTitle, let field = titleEditor else { return }
+        isEditingTitle = false
+        let newName = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        field.removeFromSuperview()
+        titleEditor = nil
+        needsDisplay = true
+        if commit, !newName.isEmpty, newName != title { onRename?(newName) }
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(NSResponder.insertNewline(_:)) { endTitleEdit(commit: true); return true }
+        if selector == #selector(NSResponder.cancelOperation(_:)) { endTitleEdit(commit: false); return true }
+        return false
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        if isEditingTitle { endTitleEdit(commit: true) }   // blur (clicking away) commits
+    }
+
     private func edgeMask(at p: NSPoint) -> Edge {
+        if !resizable { return [] }   // free text auto-sizes; no edge-resize
         let m = Self.resizeMargin
         let c = Self.cornerSize
         // A larger corner box (c) takes precedence so corners resize both axes at once.
@@ -336,7 +593,10 @@ final class WindowView: NSView {
         trackingArea = t
     }
 
+    override func mouseEntered(with event: NSEvent) { isHovered = true }
+
     override func mouseMoved(with event: NSEvent) {
+        isHovered = true
         let local = convert(event.locationInWindow, from: nil)
         // Reveal the ✕ when hovering the close dot, like the macOS traffic light.
         let overClose = closeButton.frame.insetBy(dx: -3, dy: -3).contains(local)
@@ -356,6 +616,7 @@ final class WindowView: NSView {
         NSCursor.arrow.set()
         closeButton.image = Self.closeImage("circle.fill")
         hoverEdges = []
+        isHovered = false
     }
 
     @objc private func closeClicked() {

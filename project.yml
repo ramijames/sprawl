@@ -64,3 +64,14 @@ targets:
           find "$DEST/Contents" -type d -name "*.framework" | while read -r fw; do sign "$fw"; done
           find "$DEST/Contents/MacOS" -type f | while read -r bin; do sign "$bin"; done
           sign "$DEST"
+schemes:
+  # A shared scheme so `xcodebuild -scheme Sprawl` works (and the SPM module-map prebuild runs);
+  # defined here so it survives `xcodegen generate`.
+  Sprawl:
+    build:
+      targets:
+        Sprawl: all
+    run:
+      config: Debug
+    archive:
+      config: Release

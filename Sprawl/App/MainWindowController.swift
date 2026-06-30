@@ -77,19 +77,41 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .snapToggle]
+        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .undo, .redo, .snapToggle]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .space, .snapToggle]
+        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .space, .undo, .redo, .snapToggle]
     }
 
     func toolbar(_ toolbar: NSToolbar,
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        // Creation lives in the dock / right-click / ⌘1-4 and zoom in the View menu / ⌘-scroll;
-        // only the snapping toggle remains as a toolbar control (right side).
-        itemIdentifier == .snapToggle ? makeSnapItem() : nil
+        // Creation lives in the dock / right-click / ⌘1-9 and zoom in the View menu / ⌘-scroll;
+        // the toolbar keeps undo/redo and the snapping toggle (right side).
+        switch itemIdentifier {
+        case .snapToggle: return makeSnapItem()
+        case .undo: return makeActionItem(.undo, symbol: "arrow.uturn.backward", label: "Undo",
+                                          action: #selector(MainSplitViewController.undo(_:)))
+        case .redo: return makeActionItem(.redo, symbol: "arrow.uturn.forward", label: "Redo",
+                                          action: #selector(MainSplitViewController.redo(_:)))
+        default: return nil
+        }
+    }
+
+    /// A toolbar button whose action routes through the responder chain (target nil) to the
+    /// split-view controller's undo/redo.
+    private func makeActionItem(_ id: NSToolbarItem.Identifier, symbol: String, label: String,
+                                action: Selector) -> NSToolbarItem {
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        let button = NSButton(title: "", image: image ?? NSImage(), target: nil, action: action)
+        button.bezelStyle = .texturedRounded
+        button.imagePosition = .imageOnly
+        button.toolTip = label
+        let item = NSToolbarItem(itemIdentifier: id)
+        item.view = button
+        item.label = label
+        return item
     }
 
     private func makeSnapItem() -> NSToolbarItem {
@@ -128,4 +150,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
 
 private extension NSToolbarItem.Identifier {
     static let snapToggle = NSToolbarItem.Identifier("snapToggle")
+    static let undo = NSToolbarItem.Identifier("undo")
+    static let redo = NSToolbarItem.Identifier("redo")
 }

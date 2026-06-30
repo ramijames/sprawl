@@ -110,14 +110,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // which is the SwiftTerm/editor view (not the WindowView), so it never reaches the panel's
         // own mouseDown. Canvas (folder/empty) clicks fall through to CanvasView.mouseDown.
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            guard let self,
-                  let contentView = event.window?.contentView,
+            guard let self else { return event }
+            if self.model.isDrawingLine || self.model.isPlacing { return event }   // a tool owns clicks
+            guard let contentView = event.window?.contentView,
                   let hit = contentView.hitTest(event.locationInWindow),
                   let windowView = hit.enclosingWindowView,
                   let item = self.model.item(for: windowView) else {
                 return event
             }
-            self.model.selectItem(item)
+            if event.modifierFlags.contains(.shift) { self.model.toggleItemSelection(item) }
+            else { self.model.selectItem(item) }
             return event
         }
 
@@ -125,10 +127,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // runs before the menu/responder chain (and before WKWebView can swallow the keys), so the
         // shortcuts work whenever a browser window is selected — not only after clicking the page.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            if self.model.isDrawingLine || self.model.isPlacing { return event }   // a tool handles keys (ESC)
+
+            // Delete / forward-delete removes the SELECTED item (or project) — unless focus is inside
+            // an editable content view (text/terminal/browser/editor), where it edits text instead.
+            if (event.keyCode == 51 || event.keyCode == 117),
+               event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty,
+               !AppDelegate.isEditingContent(event.window?.firstResponder) {
+                if !self.model.selectedItemIDs.isEmpty {
+                    self.model.deleteSelection(); return nil   // removes every selected item
+                }
+                if case .project(let id) = self.model.selection,
+                   let project = self.model.projects.first(where: { $0.id == id }) {
+                    self.model.removeProject(project); return nil
+                }
+                return event
+            }
+
+            // Escape clears the selection. It passes through to a focused terminal/editor/browser
+            // (where Esc is meaningful, e.g. vim) — but an annotation text field deselects instead.
+            if event.keyCode == 53,
+               event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty {
+                let responder = event.window?.firstResponder
+                if responder is AnnotationTextView || !AppDelegate.isEditingContent(responder) {
+                    self.model.clearSelection()
+                    return nil
+                }
+                return event
+            }
+
             // These act on the SELECTED window regardless of keyboard focus, so they run before the
             // menu/responder chain (and before a terminal/WebKit can swallow them).
-            guard let self,
-                  event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
+            guard event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
                   let key = event.charactersIgnoringModifiers else {
                 return event
             }
@@ -147,6 +178,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    @objc func showPreferences(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Preferences"
+        alert.informativeText = "Sprawl preferences are coming soon."
+        alert.runModal()
+    }
+
+    /// True if the responder is inside a panel's content area (a text editor, terminal, browser, …),
+    /// so Delete should edit rather than remove the selected object.
+    static func isEditingContent(_ responder: NSResponder?) -> Bool {
+        var view = responder as? NSView
+        while let current = view {
+            if current is ContentContainerView { return true }
+            view = current.superview
+        }
+        return false
+    }
+
     // Programmatic main menu (no nib). Actions route through the responder chain to
     // MainSplitViewController.
     private func setupMenu() {
@@ -155,9 +204,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About Sprawl",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Preferences…",
+                        action: #selector(AppDelegate.showPreferences(_:)), keyEquivalent: ",")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide Sprawl",
+                        action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others",
+                                         action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Sprawl",
-                        action: #selector(NSApplication.terminate(_:)),
-                        keyEquivalent: "q")
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
 
         let fileMenuItem = NSMenuItem()
@@ -184,6 +244,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Claude",
                          action: #selector(MainSplitViewController.newClaude(_:)),
                          keyEquivalent: "7")
+        fileMenu.addItem(withTitle: "New Sticky Pad",
+                         action: #selector(MainSplitViewController.newSticky(_:)),
+                         keyEquivalent: "8")
+        fileMenu.addItem(withTitle: "New Free Text",
+                         action: #selector(MainSplitViewController.newFreeText(_:)),
+                         keyEquivalent: "9")
+        fileMenu.addItem(withTitle: "New Line",
+                         action: #selector(MainSplitViewController.newLine(_:)),
+                         keyEquivalent: "0")
         // ⌘T opens a tab in the focused browser; auto-disabled when no browser is focused (the
         // action is only implemented by NavigatingWebView).
         fileMenu.addItem(withTitle: "New Tab",
@@ -206,6 +275,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         keyEquivalent: "n")
         newProjectItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(newProjectItem)
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(withTitle: "Replay Onboarding…",
+                         action: #selector(MainSplitViewController.replayOnboarding(_:)),
+                         keyEquivalent: "")
         fileMenuItem.submenu = fileMenu
 
         // Edit menu — standard responder-chain actions so ⌘X/⌘C/⌘V/⌘A reach the focused
@@ -214,6 +287,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo",
+                         action: #selector(MainSplitViewController.undo(_:)), keyEquivalent: "z")
+        let redoItem = NSMenuItem(title: "Redo",
+                                  action: #selector(MainSplitViewController.redo(_:)), keyEquivalent: "z")
+        redoItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redoItem)
+        editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")

@@ -60,8 +60,16 @@ struct TabState: Codable {
     var workingDirectory: String?
 }
 
+/// One node of a saved line path: anchor (x, y) and bezier handle (hx, hy), frame-relative.
+struct LineNodeState: Codable, Equatable {
+    var x: Double
+    var y: Double
+    var hx: Double
+    var hy: Double
+}
+
 struct ItemState: Codable {
-    enum Kind: String, Codable { case terminal, document, browser, files, gitObserver, gitGraph, projectVelocity, assistant }
+    enum Kind: String, Codable { case terminal, document, codeEditor, figma, browser, files, gitObserver, gitGraph, projectVelocity, diff, assistant, onboarding, sticky, freeText, line }
 
     var name: String
     var kind: Kind
@@ -81,6 +89,30 @@ struct ItemState: Codable {
 
     // Terminal-only (legacy single-tab field; superseded by `tabs`).
     var workingDirectory: String?
+
+    /// True if the user renamed this item — so the chosen name survives auto-titling after restore.
+    var renamed: Bool?
+
+    /// Sticky-note / free-text pastel color index (the text lives in `documentText`).
+    var stickyColor: Int?
+    /// Free-text font size.
+    var freeTextSize: Double?
+
+    // Line annotation: stroke thickness, arrowhead toggles, and the path's nodes (frame-relative
+    // anchor + bezier handle, in the panel's local coordinate space). Color reuses `stickyColor`.
+    var lineThickness: Double? = nil
+    var lineArrowStart: Bool? = nil
+    var lineArrowEnd: Bool? = nil
+    /// The connector's two endpoints (anchors; handles unused). `lineBend` is the elbow position.
+    var lineNodes: [LineNodeState]? = nil
+    var lineBend: Double? = nil
+
+    // Legacy single-segment line fields (pre-pen-tool saves); migrated into `lineNodes` on load.
+    var lineCurved: Bool? = nil
+    var lineStartX: Double? = nil
+    var lineStartY: Double? = nil
+    var lineEndX: Double? = nil
+    var lineEndY: Double? = nil
 
     // Browser-only: the last URL, so the browser restores where it was. `browserTabs` holds every
     // tab's URL in order (start-page tabs serialize as a sentinel) and supersedes `browserURL` when

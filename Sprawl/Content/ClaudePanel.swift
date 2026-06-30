@@ -8,11 +8,13 @@ final class ClaudePanel: NSObject, NSTextViewDelegate {
     private let modelPicker = NSPopUpButton()
     private let repoLabel = NSTextField(labelWithString: "")
     private let keyButton = NSButton()
-    private let transcriptView = NSTextView()
+    private let transcriptStack = FlippedStackView()
     private let transcriptScroll = NSScrollView()
+    private weak var currentAssistantRow: ChatRow?
     private let inputView = NSTextView()
     private let inputScroll = NSScrollView()
     private let sendButton = NSButton()
+    private let suggestionsStack = NSStackView()
 
     private(set) var repoPath: String?
     private var repoContext = ""
@@ -31,6 +33,7 @@ final class ClaudePanel: NSObject, NSTextViewDelegate {
         }
         updateRepoLabel()
         updateKeyButton()
+        updateSuggestions()   // now that repoPath is known, use repo-aware prompts
         showWelcome()
     }
 
@@ -75,21 +78,23 @@ final class ClaudePanel: NSObject, NSTextViewDelegate {
         bar.addSubview(repoLabel)
         bar.addSubview(keyButton)
 
-        // Transcript (read-only, streamed into).
+        // Transcript: a vertical stack of chat bubbles, scrolled top-down.
         transcriptScroll.translatesAutoresizingMaskIntoConstraints = false
         transcriptScroll.drawsBackground = false
         transcriptScroll.hasVerticalScroller = true
+        transcriptScroll.hasHorizontalScroller = false
         transcriptScroll.scrollerStyle = .overlay
         transcriptScroll.autohidesScrollers = true
-        transcriptView.isEditable = false
-        transcriptView.isRichText = true
-        transcriptView.drawsBackground = false
-        transcriptView.textContainerInset = NSSize(width: 10, height: 10)
-        transcriptView.isVerticallyResizable = true
-        transcriptView.isHorizontallyResizable = false
-        transcriptView.autoresizingMask = [.width]
-        transcriptView.textContainer?.widthTracksTextView = true
-        transcriptScroll.documentView = transcriptView
+        transcriptStack.orientation = .vertical
+        transcriptStack.alignment = .leading
+        transcriptStack.spacing = 10
+        transcriptStack.translatesAutoresizingMaskIntoConstraints = false
+        transcriptScroll.documentView = transcriptStack
+        NSLayoutConstraint.activate([
+            transcriptStack.topAnchor.constraint(equalTo: transcriptScroll.contentView.topAnchor, constant: 14),
+            transcriptStack.leadingAnchor.constraint(equalTo: transcriptScroll.contentView.leadingAnchor, constant: 14),
+            transcriptStack.trailingAnchor.constraint(equalTo: transcriptScroll.contentView.trailingAnchor, constant: -14),
+        ])
 
         // Input (multiline; Enter sends, Shift+Enter newline).
         inputScroll.translatesAutoresizingMaskIntoConstraints = false
@@ -115,15 +120,23 @@ final class ClaudePanel: NSObject, NSTextViewDelegate {
 
         sendButton.title = "Send"
         sendButton.bezelStyle = .rounded
+        sendButton.controlSize = .small
         sendButton.keyEquivalent = "\r"
         sendButton.target = self
         sendButton.action = #selector(sendTapped)
         sendButton.translatesAutoresizingMaskIntoConstraints = false
 
+        // Project-aware starter prompts, shown above the input until the first message.
+        suggestionsStack.orientation = .horizontal
+        suggestionsStack.spacing = 6
+        suggestionsStack.alignment = .centerY
+        suggestionsStack.translatesAutoresizingMaskIntoConstraints = false
+
         containerView.addSubview(bar)
         containerView.addSubview(transcriptScroll)
+        containerView.addSubview(suggestionsStack)
         containerView.addSubview(inputScroll)
-        containerView.addSubview(sendButton)
+        containerView.addSubview(sendButton)   // added last → floats on top, inside the input box
 
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: containerView.topAnchor),
@@ -141,16 +154,44 @@ final class ClaudePanel: NSObject, NSTextViewDelegate {
             transcriptScroll.topAnchor.constraint(equalTo: bar.bottomAnchor),
             transcriptScroll.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
             transcriptScroll.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            transcriptScroll.bottomAnchor.constraint(equalTo: suggestionsStack.topAnchor, constant: -4),
 
-            inputScroll.topAnchor.constraint(equalTo: transcriptScroll.bottomAnchor, constant: 6),
+            suggestionsStack.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
+            suggestionsStack.trailingAnchor.constraint(lessThanOrEqualTo: containerView.trailingAnchor, constant: -12),
+            suggestionsStack.bottomAnchor.constraint(equalTo: inputScroll.topAnchor, constant: -8),
+
             inputScroll.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 10),
+            inputScroll.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -10),
             inputScroll.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -10),
-            inputScroll.heightAnchor.constraint(equalToConstant: 56),
-            sendButton.leadingAnchor.constraint(equalTo: inputScroll.trailingAnchor, constant: 8),
-            sendButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -10),
-            sendButton.bottomAnchor.constraint(equalTo: inputScroll.bottomAnchor),
-            sendButton.widthAnchor.constraint(equalToConstant: 64),
+            inputScroll.heightAnchor.constraint(equalToConstant: 64),
+            // Send nested inside the input box, bottom-right.
+            sendButton.trailingAnchor.constraint(equalTo: inputScroll.trailingAnchor, constant: -8),
+            sendButton.bottomAnchor.constraint(equalTo: inputScroll.bottomAnchor, constant: -8),
+            sendButton.widthAnchor.constraint(equalToConstant: 60),
         ])
+        updateSuggestions()
+    }
+
+    // MARK: - Suggestions
+
+    private func updateSuggestions() {
+        suggestionsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let prompts: [String] = repoPath != nil
+            ? ["Summarize this repo", "What changed recently?", "What should I work on?", "Explain the architecture"]
+            : ["What can you help with?", "Explain a concept", "Review some code", "Draft a plan"]
+        for prompt in prompts {
+            let chip = NSButton(title: prompt, target: self, action: #selector(suggestionTapped(_:)))
+            chip.bezelStyle = .rounded
+            chip.controlSize = .small
+            chip.font = .systemFont(ofSize: 11)
+            suggestionsStack.addArrangedSubview(chip)
+        }
+    }
+
+    @objc private func suggestionTapped(_ sender: NSButton) {
+        guard !isStreaming else { return }
+        inputView.string = sender.title
+        send()
     }
 
     // MARK: - Sending
@@ -173,12 +214,13 @@ final class ClaudePanel: NSObject, NSTextViewDelegate {
         guard APIKeyStore.hasKey else { promptForKey(); return }
 
         inputView.string = ""
-        appendBlock(role: "You", color: Palette.sidebarText)
-        appendBody(text)
+        suggestionsStack.isHidden = true   // starter prompts disappear once the conversation begins
+        addRow(ChatRow(isUser: true, text: text, accent: Self.accent))
         messages.append(ClaudeMessage(role: "user", text: text))
 
-        appendBlock(role: selectedModel.displayName, color: Self.accent)
-        let assistantStart = transcriptView.textStorage?.length ?? 0
+        let assistantRow = ChatRow(isUser: false, text: "", accent: Self.accent)
+        currentAssistantRow = assistantRow
+        addRow(assistantRow)
         isStreaming = true
         sendButton.isEnabled = false
 
@@ -190,13 +232,14 @@ final class ClaudePanel: NSObject, NSTextViewDelegate {
             do {
                 for try await delta in ClaudeClient.stream(system: system, messages: history, model: model) {
                     reply += delta
-                    self.appendBody(delta)
+                    self.currentAssistantRow?.append(delta)
+                    self.scrollToBottom()
                 }
             } catch {
-                self.appendBody("\n[\(error.localizedDescription)]")
+                self.currentAssistantRow?.append("\n[\(error.localizedDescription)]")
             }
-            if !reply.isEmpty { self.messages.append(ClaudeMessage(role: "assistant", text: reply)) }
-            _ = assistantStart
+            if reply.isEmpty { self.currentAssistantRow?.append("…") }
+            else { self.messages.append(ClaudeMessage(role: "assistant", text: reply)) }
             self.isStreaming = false
             self.sendButton.isEnabled = true
         }
@@ -281,34 +324,91 @@ final class ClaudePanel: NSObject, NSTextViewDelegate {
     private static let accent = NSColor(srgbRed: 0x9E / 255, green: 0x63 / 255, blue: 0xE0 / 255, alpha: 1)
 
     private func showWelcome() {
-        appendBody("Ask Claude about this project. ", color: .secondaryLabelColor)
-        if repoPath == nil {
-            appendBody("(Tip: create this panel inside a project that has a Git widget to auto-load repo context.)\n",
-                       color: .secondaryLabelColor)
-        } else {
-            appendBody("Repo context is loaded.\n", color: .secondaryLabelColor)
-        }
+        let tip = repoPath == nil
+            ? "Ask Claude about this project. (Tip: create this panel inside a project with a Git widget to auto-load repo context.)"
+            : "Ask Claude about this project. Repo context is loaded."
+        let label = NSTextField(wrappingLabelWithString: tip)
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addRow(label)
     }
 
-    private func appendBlock(role: String, color: NSColor) {
-        let header = NSAttributedString(string: "\n\(role)\n", attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: color,
-        ])
-        transcriptView.textStorage?.append(header)
-        scrollToBottom()
-    }
-
-    private func appendBody(_ text: String, color: NSColor = NSColor(white: 0.92, alpha: 1)) {
-        let body = NSAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: 13),
-            .foregroundColor: color,
-        ])
-        transcriptView.textStorage?.append(body)
+    private func addRow(_ view: NSView) {
+        transcriptStack.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: transcriptStack.widthAnchor).isActive = true
         scrollToBottom()
     }
 
     private func scrollToBottom() {
-        transcriptView.scrollToEndOfDocument(nil)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.transcriptStack.layoutSubtreeIfNeeded()
+            let maxY = max(0, self.transcriptStack.bounds.height)
+            self.transcriptStack.scrollToVisible(NSRect(x: 0, y: maxY - 1, width: 1, height: 1))
+        }
+    }
+}
+
+/// A vertical stack that lays its content out top-down (so it reads correctly as a scroll's
+/// document view).
+final class FlippedStackView: NSStackView {
+    override var isFlipped: Bool { true }
+}
+
+/// One chat bubble row: a rounded bubble pinned right (user, accent) or left (assistant, subtle),
+/// holding a wrapping, selectable label.
+final class ChatRow: NSView {
+    private let bubble = NSView()
+    private let label = NSTextField(wrappingLabelWithString: "")
+    private let hpad: CGFloat = 12
+
+    init(isUser: Bool, text: String, accent: NSColor) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        bubble.wantsLayer = true
+        bubble.layer?.cornerRadius = 13
+        bubble.layer?.backgroundColor = (isUser ? accent : NSColor(white: 1, alpha: 0.07)).cgColor
+        bubble.translatesAutoresizingMaskIntoConstraints = false
+        // Claude's replies are Markdown → render them monospaced; user messages stay proportional.
+        label.font = isUser ? .systemFont(ofSize: 13) : .monospacedSystemFont(ofSize: 12, weight: .regular)
+        label.textColor = isUser ? .white : NSColor(white: 0.92, alpha: 1)
+        label.isSelectable = true
+        label.stringValue = text
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(bubble)
+        bubble.addSubview(label)
+        NSLayoutConstraint.activate([
+            bubble.topAnchor.constraint(equalTo: topAnchor),
+            bubble.bottomAnchor.constraint(equalTo: bottomAnchor),
+            label.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 9),
+            label.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -9),
+            label.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: hpad),
+            label.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -hpad),
+        ])
+        if isUser {
+            // User messages hug their content, right-aligned, up to 85% of the width.
+            bubble.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
+            bubble.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.85).isActive = true
+        } else {
+            // Claude's responses fill 85% of the width, left-aligned.
+            bubble.leadingAnchor.constraint(equalTo: leadingAnchor).isActive = true
+            bubble.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.85).isActive = true
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func append(_ s: String) { label.stringValue += s }
+
+    override func layout() {
+        super.layout()
+        // Wrap at 85% of the row width (a stable value) rather than the bubble's own width — deriving
+        // it from the bubble creates a feedback loop that collapses short messages into a narrow
+        // column. Short text stays one line; long text grows to 85% then wraps. Guard the assignment
+        // (setting it re-triggers layout) so it doesn't loop.
+        let w = max(40, bounds.width * 0.85 - hpad * 2)
+        if abs(label.preferredMaxLayoutWidth - w) > 0.5 {
+            label.preferredMaxLayoutWidth = w
+        }
     }
 }

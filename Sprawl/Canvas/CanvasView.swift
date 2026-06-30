@@ -57,6 +57,18 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { true }
+    // Accept first responder so focus can rest on the canvas (e.g. after a delete) while keeping the
+    // split-view controller in the responder chain — so Edit-menu Undo/Redo still reach it.
+    override var acceptsFirstResponder: Bool { true }
+
+    /// A cursor forced over the whole canvas while a tool is armed (e.g. crosshair for line drawing).
+    var toolCursor: NSCursor? {
+        didSet { window?.invalidateCursorRects(for: self) }
+    }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if let toolCursor { addCursorRect(visibleRect, cursor: toolCursor) }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: NSRect(origin: .zero, size: CanvasView.canvasSize))
@@ -321,11 +333,17 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             onSelectProjectFolder?(project.id)   // outline the target folder while the menu is open
             menu.addItem(withTitle: "New Terminal", action: #selector(contextNewTerminal), keyEquivalent: "")
             menu.addItem(withTitle: "New Document", action: #selector(contextNewDocument), keyEquivalent: "")
+            menu.addItem(withTitle: "New Code Editor", action: #selector(contextNewCodeEditor), keyEquivalent: "")
+            menu.addItem(withTitle: "New Figma", action: #selector(contextNewFigma), keyEquivalent: "")
             menu.addItem(withTitle: "New Browser", action: #selector(contextNewBrowser), keyEquivalent: "")
             menu.addItem(withTitle: "New Git Observer", action: #selector(contextNewGitObserver), keyEquivalent: "")
             menu.addItem(withTitle: "New Git Graph", action: #selector(contextNewGitGraph), keyEquivalent: "")
             menu.addItem(withTitle: "New Project Velocity", action: #selector(contextNewProjectVelocity), keyEquivalent: "")
+            menu.addItem(withTitle: "New Diff", action: #selector(contextNewDiff), keyEquivalent: "")
             menu.addItem(withTitle: "New Claude", action: #selector(contextNewClaude), keyEquivalent: "")
+            menu.addItem(withTitle: "New Sticky Pad", action: #selector(contextNewSticky), keyEquivalent: "")
+            menu.addItem(withTitle: "New Free Text", action: #selector(contextNewFreeText), keyEquivalent: "")
+            menu.addItem(withTitle: "New Line", action: #selector(contextNewLine), keyEquivalent: "")
         } else {
             contextMenuProjectID = nil
             menu.addItem(withTitle: "New Project", action: #selector(contextNewProject), keyEquivalent: "")
@@ -337,11 +355,17 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     @objc private func contextNewProject() { onCreateProject?(contextMenuPoint) }
     @objc private func contextNewTerminal() { createContextItem(.terminal) }
     @objc private func contextNewDocument() { createContextItem(.document) }
+    @objc private func contextNewCodeEditor() { createContextItem(.codeEditor) }
+    @objc private func contextNewFigma() { createContextItem(.figma) }
     @objc private func contextNewBrowser() { createContextItem(.browser) }
     @objc private func contextNewGitObserver() { createContextItem(.gitObserver) }
     @objc private func contextNewGitGraph() { createContextItem(.gitGraph) }
     @objc private func contextNewProjectVelocity() { createContextItem(.projectVelocity) }
+    @objc private func contextNewDiff() { createContextItem(.diff) }
     @objc private func contextNewClaude() { createContextItem(.assistant) }
+    @objc private func contextNewSticky() { createContextItem(.sticky) }
+    @objc private func contextNewFreeText() { createContextItem(.freeText) }
+    @objc private func contextNewLine() { model?.onRequestLineDrawing?() }
 
     private func createContextItem(_ kind: WorkItem.Kind) {
         guard let id = contextMenuProjectID else { return }

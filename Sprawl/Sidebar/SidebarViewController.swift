@@ -2,10 +2,13 @@ import AppKit
 
 /// The translucent source-list sidebar. Shows each project as a top-level row with its
 /// terminals and documents nested underneath. A "+" button at the bottom adds items/projects.
-final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
+final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate {
     private let model: AppModel
     private let outlineView = SidebarOutlineView()
     private let cellIdentifier = NSUserInterfaceItemIdentifier("SidebarCell")
+    /// True while we're mirroring the canvas selection into the outline — suppresses the outline's
+    /// own selection callbacks so syncing doesn't re-trigger a canvas focus (feedback loop).
+    private var isSyncingSelection = false
 
     var onSelectProject: ((Project) -> Void)?
     var onSelectItem: ((WorkItem) -> Void)?
@@ -14,6 +17,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     var onOpenDocument: (() -> Void)?
     var onDeleteItem: ((WorkItem) -> Void)?
     var onDeleteProject: ((Project) -> Void)?
+    var onRenameItem: ((WorkItem, String) -> Void)?
+    var onRenameProject: ((Project, String) -> Void)?
 
     init(model: AppModel) {
         self.model = model
@@ -39,6 +44,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.delegate = self
         outlineView.autoresizesOutlineColumn = true
         outlineView.onDeleteKey = { [weak self] in self?.deleteSelection() }
+        outlineView.onRenameRow = { [weak self] row in self?.beginRenaming(row: row) }
 
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -130,8 +136,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     // MARK: - NSOutlineViewDelegate
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
-        let cell = outlineView.makeView(withIdentifier: cellIdentifier, owner: self) as? NSTableCellView
-            ?? makeCell()
+        let cell = outlineView.makeView(withIdentifier: cellIdentifier, owner: self) as? SidebarCellView ?? makeCell()
 
         cell.textField?.textColor = Palette.sidebarText
         cell.imageView?.contentTintColor = Palette.sidebarText
@@ -139,10 +144,20 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             cell.textField?.stringValue = project.name
             cell.textField?.font = .systemFont(ofSize: 13, weight: .semibold)
             cell.imageView?.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+            cell.caret.isHidden = false
+            cell.setExpanded(outlineView.isItemExpanded(project))
+            cell.onToggle = { [weak self, weak cell] in
+                guard let self else { return }
+                if self.outlineView.isItemExpanded(project) { self.outlineView.collapseItem(project) }
+                else { self.outlineView.expandItem(project) }
+                cell?.setExpanded(self.outlineView.isItemExpanded(project))
+            }
         } else if let work = item as? WorkItem {
             cell.textField?.stringValue = work.name
             cell.textField?.font = .systemFont(ofSize: 12, weight: .regular)
             cell.imageView?.image = NSImage(systemSymbolName: work.kind.symbolName, accessibilityDescription: nil)
+            cell.caret.isHidden = true
+            cell.onToggle = nil
         }
         return cell
     }
@@ -152,12 +167,66 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !isSyncingSelection else { return }   // ignore selection we set to mirror the canvas
         let row = outlineView.selectedRow
         guard row >= 0, let item = outlineView.item(atRow: row) else { return }
         if let project = item as? Project {
             onSelectProject?(project)
         } else if let work = item as? WorkItem {
             onSelectItem?(work)
+        }
+    }
+
+    /// Mirror the canvas selection into the outline (a project highlights its row; an item expands
+    /// its project and highlights the item — more specific as you go down the hierarchy).
+    func syncSelection(_ selection: AppModel.Selection) {
+        isSyncingSelection = true
+        defer { isSyncingSelection = false }
+        switch selection {
+        case .none:
+            outlineView.deselectAll(nil)
+        case .project(let id):
+            guard let project = model.projects.first(where: { $0.id == id }) else { outlineView.deselectAll(nil); return }
+            let row = outlineView.row(forItem: project)
+            if row >= 0 {
+                outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                outlineView.scrollRowToVisible(row)
+            }
+        case .item(let id):
+            for project in model.projects where project.items.contains(where: { $0.id == id }) {
+                outlineView.expandItem(project)
+                if let work = project.items.first(where: { $0.id == id }) {
+                    let row = outlineView.row(forItem: work)
+                    if row >= 0 {
+                        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                        outlineView.scrollRowToVisible(row)
+                    }
+                }
+                return
+            }
+            outlineView.deselectAll(nil)
+        }
+    }
+
+    /// Double-click any row (item or project) to rename it inline.
+    private func beginRenaming(row: Int) {
+        guard row >= 0,
+              let cell = outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) as? NSTableCellView,
+              let field = cell.textField else { return }
+        field.isEditable = true
+        outlineView.editColumn(0, row: row, with: nil, select: true)
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField else { return }
+        field.isEditable = false
+        let row = outlineView.row(for: field)
+        guard row >= 0, let item = outlineView.item(atRow: row) else { return }
+        let newName = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let work = item as? WorkItem {
+            if newName.isEmpty { field.stringValue = work.name } else { onRenameItem?(work, newName) }
+        } else if let project = item as? Project {
+            if newName.isEmpty { field.stringValue = project.name } else { onRenameProject?(project, newName) }
         }
     }
 
@@ -172,34 +241,72 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
-    private func makeCell() -> NSTableCellView {
-        let cell = NSTableCellView()
+    private func makeCell() -> SidebarCellView {
+        let cell = SidebarCellView()
         cell.identifier = cellIdentifier
-
-        let imageView = NSImageView()
-        let textField = NSTextField(labelWithString: "")
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-        textField.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(imageView)
-        cell.addSubview(textField)
-        cell.imageView = imageView
-        cell.textField = textField
-
-        NSLayoutConstraint.activate([
-            imageView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-            imageView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            imageView.widthAnchor.constraint(equalToConstant: 18),
-            textField.leadingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: 6),
-            textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-            textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
+        cell.textField?.delegate = self   // commits inline rename (double-click a row)
         return cell
     }
 }
 
-/// Source-list outline view that reports ⌫ / forward-delete so the selected row can be removed.
+/// A sidebar row: a transparent expand/collapse caret (projects only) + icon + editable name.
+final class SidebarCellView: NSTableCellView {
+    let caret = NSButton()
+    var onToggle: (() -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        let icon = NSImageView()
+        let text = NSTextField(labelWithString: "")
+        text.isSelectable = true
+        text.focusRingType = .none
+        text.lineBreakMode = .byTruncatingTail
+
+        caret.isBordered = false
+        caret.imagePosition = .imageOnly
+        caret.bezelStyle = .inline
+        caret.contentTintColor = .secondaryLabelColor
+        caret.target = self
+        caret.action = #selector(toggle)
+
+        for sub in [caret, icon, text] as [NSView] {
+            sub.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(sub)
+        }
+        imageView = icon
+        textField = text
+
+        NSLayoutConstraint.activate([
+            caret.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            caret.centerYAnchor.constraint(equalTo: centerYAnchor),
+            caret.widthAnchor.constraint(equalToConstant: 14),
+            caret.heightAnchor.constraint(equalToConstant: 14),
+            icon.leadingAnchor.constraint(equalTo: caret.trailingAnchor, constant: 2),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+            text.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    @objc private func toggle() { onToggle?() }
+
+    func setExpanded(_ expanded: Bool) {
+        let config = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+        caret.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right",
+                              accessibilityDescription: nil)?.withSymbolConfiguration(config)
+    }
+}
+
+/// Source-list outline view that reports ⌫ / forward-delete so the selected row can be removed, and
+/// routes a double-click to inline rename (consuming it so the row doesn't expand/collapse — that's
+/// the caret button's job). The built-in disclosure triangle is hidden in favor of the caret.
 final class SidebarOutlineView: NSOutlineView {
     var onDeleteKey: (() -> Void)?
+    var onRenameRow: ((Int) -> Void)?
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 51 || event.keyCode == 117 {   // delete / forward delete
@@ -208,6 +315,20 @@ final class SidebarOutlineView: NSOutlineView {
             super.keyDown(with: event)
         }
     }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            let row = row(at: convert(event.locationInWindow, from: nil))
+            if row >= 0 {
+                selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                onRenameRow?(row)
+                return   // consume — don't let the default double-click expand/collapse the row
+            }
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func frameOfOutlineCell(atRow row: Int) -> NSRect { .zero }   // hide built-in triangle
 }
 
 /// Draws an identical rounded selection highlight for every row regardless of nesting level,

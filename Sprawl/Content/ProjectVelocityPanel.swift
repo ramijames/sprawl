@@ -68,6 +68,8 @@ final class ProjectVelocityPanel: NSObject {
 
         bar.addSubview(chooseButton)
         bar.addSubview(pathLabel)
+        chooseButton.isHidden = true   // repo is chosen via the empty state + the options bar
+        pathLabel.isHidden = true
 
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.drawsBackground = false
@@ -101,7 +103,7 @@ final class ProjectVelocityPanel: NSObject {
             bar.topAnchor.constraint(equalTo: containerView.topAnchor),
             bar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-            bar.heightAnchor.constraint(equalToConstant: 40),
+            bar.heightAnchor.constraint(equalToConstant: 0),
             chooseButton.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             chooseButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             pathLabel.leadingAnchor.constraint(equalTo: chooseButton.trailingAnchor, constant: 10),
@@ -127,6 +129,9 @@ final class ProjectVelocityPanel: NSObject {
         bar.isHidden = !hasRepo
         scroll.isHidden = !hasRepo
     }
+
+    /// Public repository picker (invoked from the options bar).
+    func chooseRepo() { chooseFolder() }
 
     @objc private func chooseFolder() {
         let panel = NSOpenPanel()

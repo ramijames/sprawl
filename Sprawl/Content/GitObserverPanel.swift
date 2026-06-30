@@ -73,6 +73,8 @@ final class GitObserverPanel: NSObject, NSTableViewDataSource, NSTableViewDelega
 
         bar.addSubview(chooseButton)
         bar.addSubview(pathLabel)
+        chooseButton.isHidden = true   // repo is chosen via the empty state + the options bar
+        pathLabel.isHidden = true
 
         summaryLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         summaryLabel.textColor = Palette.sidebarText
@@ -148,7 +150,7 @@ final class GitObserverPanel: NSObject, NSTableViewDataSource, NSTableViewDelega
             bar.topAnchor.constraint(equalTo: containerView.topAnchor),
             bar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-            bar.heightAnchor.constraint(equalToConstant: 40),
+            bar.heightAnchor.constraint(equalToConstant: 0),
             chooseButton.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
             chooseButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             pathLabel.leadingAnchor.constraint(equalTo: chooseButton.trailingAnchor, constant: 10),
@@ -180,6 +182,9 @@ final class GitObserverPanel: NSObject, NSTableViewDataSource, NSTableViewDelega
         emptyState.isHidden = hasRepo
         for view in [bar, summaryLabel, yearStack, graphScroll, tableScroll] { view.isHidden = !hasRepo }
     }
+
+    /// Public repository picker (invoked from the options bar).
+    func chooseRepo() { chooseFolder() }
 
     @objc private func chooseFolder() {
         let panel = NSOpenPanel()

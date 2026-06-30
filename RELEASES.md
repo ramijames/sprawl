@@ -3,6 +3,58 @@
 A running log of notable changes to Sprawl, newest first. Dates are `YYYY-MM-DD`. The app is
 pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-tagged for now.
 
+## 2026-06-30
+
+### Added
+- **Annotations.** **Sticky notes** (solid pastel text pads), **Free Text** (background-less pastel
+  text that hugs its content), and **Lines / connectors** — two-point orthogonal "elbow" connectors
+  with rounded corners and optional arrowheads, drawn by click-drag or click-then-click, with
+  endpoint + segment handles (snap-aware) and auto-simplifying elbows.
+- **Options bar.** A floating, dock-styled contextual toolbar above the selected item: color / font /
+  size for annotations, thickness + arrowhead toggles for lines, a repository picker for the
+  git/code/diff tools, and open / save / word-wrap for documents — plus a delete button. Toggled
+  controls highlight with an accent background.
+- **Undo / redo.** A command-stack history (⌘Z / ⇧⌘Z) covering create, delete, move/resize, and
+  annotation edits; Edit-menu items and toolbar buttons beside the snap toggle.
+- **Multi-select.** Shift-click to select multiple items (all outlined); DELETE removes the whole
+  group as one undoable step and ESC deselects everything.
+- **Code editor.** Pick a repository, browse its **file tree** (single-click folder toggle,
+  double-click rename, a right-click menu with Open in Finder / Open in Tab / Copy Path / Copy
+  Relative Path / Delete-to-Trash), and edit files with syntax highlighting + line numbers; edits
+  autosave to disk. The window title shows the selected repo.
+- **Diff.** Uncommitted changes (`git diff HEAD`) as a **changed-files list** (with per-file +/-
+  counts on the right) beside a GitHub-style **side-by-side** diff for the selected file (old vs.
+  new, red / green, wrapped, with line-number gutters).
+- **Figma.** Wraps the Figma web app in a panel so a file lives on the canvas (sign in inside it).
+- **Dock groups + click-to-place.** The dock is a **New Project** button plus discrete groups —
+  **Ideate**, **Annotate** (Sticky / Text / Arrow), **Review** (Diff / Velocity / Observer / Graph),
+  **Create** (Terminal / Document / Code / Figma / Browser / Claude), **Manage** — that open a custom
+  **sub-dock** above the dock (no macOS menu). Picking a tool arms it and places the item where you
+  next click on the canvas. Icons carry small captions.
+- **Onboarding.** A first-run wizard (intro → browser-profile access → install Claude → create your
+  first project) living in a dedicated onboarding space.
+
+### Changed
+- **Snapping aligns to neighbors.** Window move/resize now magnetically aligns edges and centers to
+  nearby windows (Figma-style guides, ~8px on-screen) instead of rounding to an absolute grid.
+- **Claude chat.** Redesigned as chat bubbles (your messages right, Claude's left in a monospace
+  bubble up to 85% width), with the Send button nested inside the input box and project-aware
+  starter prompts above it.
+- **Documents are plain text** (no gutter / syntax highlighting); the dedicated Code app provides
+  highlighting + line numbers.
+- **App menu** reorganized: About Sprawl · Preferences · Hide / Hide Others · Quit.
+- **Rename** items and projects by double-clicking their name (sidebar or window header); added names
+  no longer get a numeric suffix.
+
+### Fixed
+- **Delete / Escape for every element.** Selecting a non-text panel now pulls keyboard focus to it,
+  so DELETE (remove) and ESCAPE (deselect) work for lines, annotations, and git/analytics widgets —
+  not just text panels.
+- **Multi-delete undo.** Grouped the delete into one step and drop focus to the canvas (keeping the
+  controller in the responder chain) so ⌘Z restores the whole group.
+- **Code editor files not loading.** Replaced the CDN-hosted Monaco web view (blank in the WKWebView
+  sandbox) with the native source editor, and rebuild the editor per file so selections load.
+
 ## 2026-06-29
 
 ### Added

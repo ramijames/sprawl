@@ -21,12 +21,22 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
 - **Tabbed windows** — every window (terminal, document, or browser) holds tabs: ⌘T opens one,
   ⌘W closes it (closing the last tab closes the window), acting on the selected window. Press
   **⌘`** to center and zoom the selected window to fill the screen.
-- **Snapping** — a toolbar button (top-right) cycles **Off → 10px → 100px**; with it on, moving or
-  resizing a window (or dragging a project) snaps to that grid.
+- **Snapping** — a toolbar button (top-right) toggles snapping; with it on, moving or resizing a
+  window magnetically **aligns its edges and centers to nearby windows** (Figma-style smart guides),
+  and lines / click-to-place snap to the grid.
 - **Live terminals** — each terminal panel runs your login shell (`$SHELL`) with a real PTY
   (via [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)).
-- **Code & text editor** — open, edit, and save files with syntax highlighting and line
-  numbers (via [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor)).
+- **Documents** — a plain-text editor for notes and scratch text (open / save), with word-wrap.
+- **Code editor** — point it at a repository and browse the **file tree** (single-click toggles a
+  folder, double-click renames, right-click for Open in Finder / Open in Tab / Copy Path / Copy
+  Relative Path / Delete-to-Trash); open files edit with syntax highlighting + line numbers (via
+  [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor)) and autosave to disk.
+- **Diff** — see uncommitted changes (`git diff HEAD`) as a **changed-files list** (with per-file
+  +/- counts) beside a GitHub-style **side-by-side** diff for the selected file.
+- **Figma** — wrap the Figma web app in a panel so a file lives right on the canvas.
+- **Annotations** — **sticky notes**, **free text**, and **lines / connectors** (orthogonal "elbow"
+  routing with rounded corners and arrowheads), all with a floating **options bar** for color,
+  thickness, font, and arrowheads.
 - **Tabbed browser** — each browser panel has tabs (⌘T for a new one), a most-opened-sites
   favicon grid as its new-tab page, two-finger swipe and ⌘←/⌘→ for back/forward, and address-bar
   search. Links that open a new window become tabs; sized OAuth/sign-in popups stay separate
@@ -43,20 +53,23 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   stand out), and a **core-contributors** list with share bars showing who's doing the work.
 - **Claude** — a streaming AI assistant panel (Anthropic Messages API) with a model picker
   (Sonnet 4.6 / Opus 4.8 / Haiku 4.5) that's **repo-aware by location**: created inside a project
-  that has a Git widget, it inherits that repo's branch, status, and recent commits as context. The
-  API key is stored in the macOS Keychain. See [`dev-docs/claude-integration-spec.md`](dev-docs/claude-integration-spec.md).
+  that has a Git widget, it inherits that repo's branch, status, and recent commits as context. A
+  **chat-bubble** UI (Send nested in the input) with project-aware starter prompts; the API key is
+  stored in the macOS Keychain. See [`dev-docs/claude-integration-spec.md`](dev-docs/claude-integration-spec.md).
 - **Projects on one shared canvas** — every project is a labeled "folder" card that wraps its
   own windows; they're laid out spatially across the same surface, not hidden behind tabs.
   Click a project in the sidebar to pan/zoom straight to it. Double-click a folder's tab to
   rename it.
-- **Selection** — a single white outline shows what's selected: click empty canvas to select
-  nothing, a folder to select that project, or a window/terminal to select that item.
-- **Floating dock** — a rounded toolbar pinned to the bottom-center of the canvas (Lucide icons):
-  a standalone **New Project** button plus grouped flyout folders — **Apps** (Terminal / Document /
-  Browser / Claude), **Git** (Git Observer / Git Graph), and **Analytics** (Project Velocity) — each
-  opening a menu of windows to create in the focused project.
-- **Right-click** — empty canvas to make a project where you click; empty space inside a folder
-  to add a terminal / document / browser / Git Observer / Git Graph / Project Velocity to it.
+- **Selection** — a white outline shows what's selected; **Shift-click** to select multiple items
+  at once (then DELETE removes the group, ESC deselects). DELETE removes the selection; **⌘Z / ⇧⌘Z**
+  undo / redo create, delete, move/resize, and annotation edits.
+- **Floating dock** — a rounded toolbar pinned to the bottom-center of the canvas (Lucide icons): a
+  standalone **New Project** button plus discrete groups — **Ideate**, **Annotate** (Sticky / Text /
+  Arrow), **Review** (Diff / Velocity / Observer / Graph), **Create** (Terminal / Document / Code /
+  Figma / Browser / Claude), and **Manage**. Clicking a group opens a custom **sub-dock** above the
+  dock; picking a tool arms it and places the item **where you next click on the canvas**.
+- **Right-click** — empty canvas to make a project where you click; empty space inside a folder to
+  add any tool (terminal, document, code, figma, browser, git widgets, diff, annotations, …) to it.
 - **Persistent workspace** — close the app and reopen it to find everything exactly where you
   left it (see [Persistence](#persistence)).
 - **Dark, terminal-like UI** — chrome-less window with a unified toolbar, dark vibrancy

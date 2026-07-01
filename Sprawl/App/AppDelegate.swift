@@ -164,6 +164,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   let key = event.charactersIgnoringModifiers else {
                 return event
             }
+            // ⌘F opens find-in-page on the selected browser.
+            if key == "f", let browser = self.model.selectedItem?.browser {
+                browser.showFind()
+                return nil
+            }
             // ⌘W closes the active file tab of the selected Code editor (its tabs aren't Tabbable tabs).
             if key == "w", let editor = self.model.selectedItem?.codeEditor {
                 if !event.isARepeat { editor.closeCurrentTab() }
@@ -312,6 +317,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(withTitle: "Command Palette…",
                          action: #selector(MainSplitViewController.showCommandPalette(_:)),
                          keyEquivalent: "k")
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(withTitle: "Toggle Sidebar",
+                         action: #selector(NSSplitViewController.toggleSidebar(_:)),
+                         keyEquivalent: "\\")
         viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Zoom In",
                          action: #selector(MainSplitViewController.zoomIn(_:)),

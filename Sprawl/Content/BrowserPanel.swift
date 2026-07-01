@@ -291,6 +291,33 @@ final class TopSitesStore {
     }
 
     func bookmarks() -> [Bookmark] { bookmarkList }
+    func isBookmarked(_ url: String) -> Bool { bookmarkList.contains { $0.url == url } }
+
+    /// Add a bookmark and persist immediately (user action, vs. the bulk import which defers to `flush`).
+    func addBookmarkAndSave(title: String, url: String) { addBookmark(title: title, url: url); saveBookmarks() }
+    func removeBookmark(url: String) { bookmarkList.removeAll { $0.url == url }; saveBookmarks() }
+    func renameBookmark(url: String, title: String) {
+        guard let index = bookmarkList.firstIndex(where: { $0.url == url }) else { return }
+        bookmarkList[index].title = title
+        saveBookmarks()
+    }
+
+    /// Address-bar suggestions: matching bookmarks (full URL + title) first, then frequent hosts.
+    func suggestions(_ query: String, limit: Int = 8) -> [(title: String, url: String)] {
+        let q = query.lowercased()
+        guard !q.isEmpty else { return [] }
+        var seen = Set<String>()
+        var out: [(title: String, url: String)] = []
+        for bm in bookmarkSuggestions(query, limit: limit) where seen.insert(bm.url).inserted {
+            out.append((bm.title, bm.url))
+        }
+        for site in sites.values.sorted(by: { $0.count > $1.count }) where out.count < limit {
+            guard site.host.contains(q) else { continue }
+            let url = "https://\(site.host)"
+            if seen.insert(url).inserted { out.append((site.name.isEmpty ? site.host : site.name, url)) }
+        }
+        return Array(out.prefix(limit))
+    }
 
     /// Bookmarks whose title or URL contains `query` (for address-bar autocomplete), most-relevant
     /// first (prefix-of-host beats a mid-string match).
@@ -438,7 +465,7 @@ final class FocusTracker: NSObject, WKScriptMessageHandler {
 
 /// Owns one or more browser tabs (each a `WKWebView`) plus a tab strip and an address bar, hosted
 /// inside a window panel. The only file that touches WebKit.
-final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable {
+final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, Tabbable, NSTextFieldDelegate {
     /// One browser tab: its web view plus the bits we surface in the tab strip / persistence.
     private final class Tab {
         let webView: WKWebView
@@ -460,11 +487,18 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
+    private let starButton = NSButton()
     private let bookmarksButton = NSButton()
     private let bookmarksBar = NSView()
     private let bookmarksStack = NSStackView()
     private var bookmarksBarHeight: NSLayoutConstraint!
     private var barBookmarks: [TopSitesStore.Bookmark] = []
+    private let suggestionsView = NSView()
+    private let suggestionStack = NSStackView()
+    private var currentSuggestions: [(title: String, url: String)] = []
+    private var suggestionIndex = -1
+    private let findBar = NSView()
+    private let findField = NSTextField()
     /// Close the whole browser window (the toolbar's × — the panel is chromeless, no title bar).
     var onCloseWindow: (() -> Void)?
 
@@ -478,8 +512,9 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
     /// Navigation/tab changes — request an autosave so the browser restores its tabs.
     var onURLChange: (() -> Void)?
     /// A sized popup (e.g. OAuth) asked for a new window: the model hosts this freshly-created
-    /// browser panel as a separate item. Plain `_blank` links open as a new tab instead.
-    var onHostNewBrowser: ((BrowserPanel) -> Void)?
+    /// browser panel as a separate item, centered over the opener at the requested size (so sign-ins
+    /// feel like a modal). Plain `_blank` links open as a new tab instead.
+    var onHostNewBrowser: ((BrowserPanel, NSSize) -> Void)?
     /// The last tab was closed, or `window.close()` fired on a popup — close this panel.
     var onRequestClose: (() -> Void)?
 
@@ -599,6 +634,29 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         addressField.lineBreakMode = .byTruncatingTail
         addressField.target = self
         addressField.action = #selector(go)
+        addressField.delegate = self
+
+        starButton.image = NSImage(systemSymbolName: "star", accessibilityDescription: "Bookmark")
+        starButton.isBordered = false
+        starButton.imagePosition = .imageOnly
+        starButton.contentTintColor = Palette.sidebarText
+        starButton.target = self
+        starButton.action = #selector(toggleBookmarkCurrent)
+        starButton.toolTip = "Bookmark this page"
+
+        // Autocomplete dropdown (bookmarks + history), overlaying the page below the address bar.
+        suggestionsView.wantsLayer = true
+        suggestionsView.layer?.backgroundColor = Palette.panelBody.cgColor
+        suggestionsView.layer?.cornerRadius = 8
+        suggestionsView.layer?.borderWidth = 1
+        suggestionsView.layer?.borderColor = Palette.panelBorder.cgColor
+        suggestionsView.layer?.masksToBounds = true
+        suggestionsView.translatesAutoresizingMaskIntoConstraints = false
+        suggestionsView.isHidden = true
+        suggestionStack.orientation = .vertical
+        suggestionStack.spacing = 0
+        suggestionStack.translatesAutoresizingMaskIntoConstraints = false
+        suggestionsView.addSubview(suggestionStack)
 
         bookmarksButton.image = NSImage(systemSymbolName: "book", accessibilityDescription: "Bookmarks")
         bookmarksButton.isBordered = false
@@ -616,9 +674,10 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         bookmarksStack.translatesAutoresizingMaskIntoConstraints = false
         bookmarksBar.addSubview(bookmarksStack)
 
-        // Order (top → bottom): address toolbar, tab strip, bookmarks bar, web content.
-        for view in [navBar, tabBar, bookmarksBar, webContainer] { container.addSubview(view) }
-        for view in [closeButton, backButton, forwardButton, reloadButton, addressField, bookmarksButton] {
+        // Order (top → bottom): address toolbar, tab strip, bookmarks bar, web content. The suggestions
+        // dropdown is added last so it overlays the page.
+        for view in [navBar, tabBar, bookmarksBar, webContainer, suggestionsView] { container.addSubview(view) }
+        for view in [closeButton, backButton, forwardButton, reloadButton, addressField, starButton, bookmarksButton] {
             view.translatesAutoresizingMaskIntoConstraints = false
             navBar.addSubview(view)
         }
@@ -659,8 +718,11 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
             reloadButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
             reloadButton.widthAnchor.constraint(equalToConstant: 22),
             addressField.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: 8),
-            addressField.trailingAnchor.constraint(equalTo: bookmarksButton.leadingAnchor, constant: -8),
+            addressField.trailingAnchor.constraint(equalTo: starButton.leadingAnchor, constant: -8),
             addressField.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
+            starButton.trailingAnchor.constraint(equalTo: bookmarksButton.leadingAnchor, constant: -6),
+            starButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
+            starButton.widthAnchor.constraint(equalToConstant: 22),
             bookmarksButton.trailingAnchor.constraint(equalTo: navBar.trailingAnchor, constant: -10),
             bookmarksButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
             bookmarksButton.widthAnchor.constraint(equalToConstant: 22),
@@ -668,8 +730,91 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
             bookmarksStack.leadingAnchor.constraint(equalTo: bookmarksBar.leadingAnchor, constant: 10),
             bookmarksStack.trailingAnchor.constraint(lessThanOrEqualTo: bookmarksBar.trailingAnchor, constant: -10),
             bookmarksStack.centerYAnchor.constraint(equalTo: bookmarksBar.centerYAnchor),
+
+            suggestionsView.topAnchor.constraint(equalTo: navBar.bottomAnchor, constant: -2),
+            suggestionsView.leadingAnchor.constraint(equalTo: addressField.leadingAnchor, constant: -6),
+            suggestionsView.trailingAnchor.constraint(equalTo: addressField.trailingAnchor, constant: 6),
+            suggestionStack.topAnchor.constraint(equalTo: suggestionsView.topAnchor),
+            suggestionStack.leadingAnchor.constraint(equalTo: suggestionsView.leadingAnchor),
+            suggestionStack.trailingAnchor.constraint(equalTo: suggestionsView.trailingAnchor),
+            suggestionStack.bottomAnchor.constraint(equalTo: suggestionsView.bottomAnchor),
         ])
         rebuildBookmarksBar()
+        setupFindBar()
+    }
+
+    // MARK: - Find in page (⌘F)
+
+    private func setupFindBar() {
+        findBar.wantsLayer = true
+        findBar.layer?.backgroundColor = Palette.panelBody.cgColor
+        findBar.layer?.cornerRadius = 8
+        findBar.layer?.borderWidth = 1
+        findBar.layer?.borderColor = Palette.panelBorder.cgColor
+        findBar.translatesAutoresizingMaskIntoConstraints = false
+        findBar.isHidden = true
+
+        findField.placeholderString = "Find in page"
+        findField.font = .systemFont(ofSize: 12)
+        findField.focusRingType = .none
+        findField.translatesAutoresizingMaskIntoConstraints = false
+        findField.delegate = self
+
+        let prev = NSButton(image: NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "Previous")!,
+                            target: self, action: #selector(findPrevious))
+        let next = NSButton(image: NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Next")!,
+                            target: self, action: #selector(findForward))
+        let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")!,
+                             target: self, action: #selector(hideFind))
+        for button in [prev, next, close] {
+            button.isBordered = false; button.imagePosition = .imageOnly; button.contentTintColor = Palette.sidebarText
+            button.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        for view in [findField, prev, next, close] { findBar.addSubview(view) }
+        container.addSubview(findBar)   // topmost overlay
+        NSLayoutConstraint.activate([
+            findBar.topAnchor.constraint(equalTo: bookmarksBar.bottomAnchor, constant: 8),
+            findBar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            findBar.heightAnchor.constraint(equalToConstant: 34),
+            findField.leadingAnchor.constraint(equalTo: findBar.leadingAnchor, constant: 10),
+            findField.centerYAnchor.constraint(equalTo: findBar.centerYAnchor),
+            findField.widthAnchor.constraint(equalToConstant: 200),
+            prev.leadingAnchor.constraint(equalTo: findField.trailingAnchor, constant: 8),
+            prev.centerYAnchor.constraint(equalTo: findBar.centerYAnchor),
+            next.leadingAnchor.constraint(equalTo: prev.trailingAnchor, constant: 4),
+            next.centerYAnchor.constraint(equalTo: findBar.centerYAnchor),
+            close.leadingAnchor.constraint(equalTo: next.trailingAnchor, constant: 8),
+            close.centerYAnchor.constraint(equalTo: findBar.centerYAnchor),
+            close.trailingAnchor.constraint(equalTo: findBar.trailingAnchor, constant: -10),
+        ])
+    }
+
+    /// Show the find bar and focus it (⌘F).
+    func showFind() {
+        findBar.isHidden = false
+        findField.textColor = .labelColor
+        container.window?.makeFirstResponder(findField)
+    }
+
+    @objc private func hideFind() {
+        findBar.isHidden = true
+        container.window?.makeFirstResponder(activeTab?.webView)
+    }
+
+    @objc private func findForward() { find(forward: true) }
+    @objc private func findPrevious() { find(forward: false) }
+
+    private func find(forward: Bool) {
+        let query = findField.stringValue
+        guard !query.isEmpty, let webView = activeTab?.webView else { return }
+        let config = WKFindConfiguration()
+        config.backwards = !forward
+        config.caseSensitive = false
+        config.wraps = true
+        webView.find(query, configuration: config) { [weak self] result in
+            self?.findField.textColor = result.matchFound ? .labelColor : .systemRed
+        }
     }
 
     // MARK: - Bookmarks bar + menu
@@ -687,8 +832,27 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
             chip.font = .systemFont(ofSize: 11)
             chip.tag = index
             chip.toolTip = bm.url
+            chip.menu = bookmarkContextMenu(url: bm.url)   // right-click → rename / remove / copy
+            if let host = URL(string: bm.url)?.host { Self.loadFavicon(host: host, into: chip) }
             bookmarksStack.addArrangedSubview(chip)
         }
+    }
+
+    private static var faviconCache: [String: NSImage] = [:]
+
+    /// Load a host's favicon (cached) and show it before the chip's title.
+    private static func loadFavicon(host: String, into button: NSButton) {
+        if let image = faviconCache[host] { button.image = image; button.imagePosition = .imageLeading; return }
+        guard let url = URL(string: "https://icons.duckduckgo.com/ip3/\(host).ico") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            guard let data, let image = NSImage(data: data) else { return }
+            image.size = NSSize(width: 14, height: 14)
+            DispatchQueue.main.async {
+                faviconCache[host] = image
+                button.image = image
+                button.imagePosition = .imageLeading
+            }
+        }.resume()
     }
 
     private static func shortTitle(_ bm: TopSitesStore.Bookmark) -> String {
@@ -699,6 +863,51 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
     @objc private func openBookmarkChip(_ sender: NSButton) {
         guard barBookmarks.indices.contains(sender.tag) else { return }
         openBookmark(barBookmarks[sender.tag].url)
+    }
+
+    private func bookmarkContextMenu(url: String) -> NSMenu {
+        let menu = NSMenu()
+        for (title, action) in [("Rename…", #selector(renameBookmarkItem(_:))),
+                                ("Remove", #selector(removeBookmarkItem(_:))),
+                                ("Copy Link", #selector(copyBookmarkItem(_:)))] {
+            if title == "Copy Link" { menu.addItem(.separator()) }
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = url
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func renameBookmarkItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? String,
+              let bookmark = topSites.bookmarks().first(where: { $0.url == url }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename Bookmark"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = bookmark.title
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let newTitle = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newTitle.isEmpty else { return }
+        topSites.renameBookmark(url: url, title: newTitle)
+        rebuildBookmarksBar()
+    }
+
+    @objc private func removeBookmarkItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? String else { return }
+        topSites.removeBookmark(url: url)
+        rebuildBookmarksBar()
+        updateStar()
+    }
+
+    @objc private func copyBookmarkItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
     }
 
     @objc private func showBookmarksMenu() {
@@ -724,6 +933,109 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
     private func openBookmark(_ urlString: String) {
         guard let url = URL(string: urlString), let tab = activeTab else { return }
         load(url, in: tab)
+    }
+
+    /// Toggle a bookmark for the current page (the toolbar ★).
+    @objc private func toggleBookmarkCurrent() {
+        guard let tab = activeTab, !tab.isStartPage,
+              let urlString = tab.webView.url?.absoluteString ?? tab.url else { return }
+        if topSites.isBookmarked(urlString) { topSites.removeBookmark(url: urlString) }
+        else { topSites.addBookmarkAndSave(title: tab.title, url: urlString) }
+        updateStar()
+        rebuildBookmarksBar()
+    }
+
+    private func updateStar() {
+        let urlString = activeTab.flatMap { $0.isStartPage ? nil : ($0.webView.url?.absoluteString ?? $0.url) }
+        let marked = urlString.map { topSites.isBookmarked($0) } ?? false
+        starButton.image = NSImage(systemSymbolName: marked ? "star.fill" : "star", accessibilityDescription: "Bookmark")
+        starButton.contentTintColor = marked ? .systemYellow : Palette.sidebarText
+        starButton.isEnabled = urlString != nil
+        starButton.toolTip = marked ? "Remove bookmark" : "Bookmark this page"
+    }
+
+    // MARK: - Address-bar autocomplete (bookmarks + history)
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === addressField else { return }
+        updateSuggestions(addressField.stringValue)
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.hideSuggestions() }
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if control === findField {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)): find(forward: true); return true
+            case #selector(NSResponder.cancelOperation(_:)): hideFind(); return true
+            default: return false
+            }
+        }
+        guard control === addressField, !suggestionsView.isHidden, !currentSuggestions.isEmpty else { return false }
+        switch commandSelector {
+        case #selector(NSResponder.moveDown(_:)):
+            suggestionIndex = min(suggestionIndex + 1, currentSuggestions.count - 1); highlightSuggestion(); return true
+        case #selector(NSResponder.moveUp(_:)):
+            suggestionIndex = max(suggestionIndex - 1, -1); highlightSuggestion(); return true
+        case #selector(NSResponder.insertNewline(_:)):
+            if suggestionIndex >= 0 { openSuggestion(suggestionIndex); return true }
+            return false   // nothing highlighted → let go() load the typed text
+        case #selector(NSResponder.cancelOperation(_:)):
+            hideSuggestions(); return true
+        default:
+            return false
+        }
+    }
+
+    private func updateSuggestions(_ query: String) {
+        currentSuggestions = topSites.suggestions(query)
+        suggestionIndex = -1
+        suggestionStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard !currentSuggestions.isEmpty else { hideSuggestions(); return }
+        for (index, suggestion) in currentSuggestions.enumerated() {
+            let row = NSButton(title: "", target: self, action: #selector(suggestionRowClicked(_:)))
+            row.tag = index
+            row.isBordered = false
+            row.wantsLayer = true
+            row.alignment = .left
+            row.imagePosition = .noImage
+            let title = suggestion.title.isEmpty ? suggestion.url : suggestion.title
+            let attributed = NSMutableAttributedString(string: title + "   ", attributes: [
+                .font: NSFont.systemFont(ofSize: 12), .foregroundColor: Palette.sidebarText])
+            attributed.append(NSAttributedString(string: suggestion.url, attributes: [
+                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
+            row.attributedTitle = attributed
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.heightAnchor.constraint(equalToConstant: 30).isActive = true
+            suggestionStack.addArrangedSubview(row)
+        }
+        suggestionsView.isHidden = false
+    }
+
+    private func highlightSuggestion() {
+        for (index, view) in suggestionStack.arrangedSubviews.enumerated() {
+            view.layer?.backgroundColor = index == suggestionIndex
+                ? NSColor.controlAccentColor.withAlphaComponent(0.35).cgColor : NSColor.clear.cgColor
+        }
+    }
+
+    @objc private func suggestionRowClicked(_ sender: NSButton) { openSuggestion(sender.tag) }
+
+    private func openSuggestion(_ index: Int) {
+        guard currentSuggestions.indices.contains(index),
+              let url = URL(string: currentSuggestions[index].url), let tab = activeTab else { return }
+        addressField.stringValue = currentSuggestions[index].url
+        hideSuggestions()
+        load(url, in: tab)
+    }
+
+    private func hideSuggestions() {
+        suggestionsView.isHidden = true
+        currentSuggestions = []
+        suggestionIndex = -1
+        suggestionStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
     }
 
     // MARK: - Tabs
@@ -849,6 +1161,7 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         addressField.stringValue = tab.isStartPage ? "" : (tab.webView.url?.absoluteString ?? tab.url ?? "")
         backButton.isEnabled = tab.webView.canGoBack
         forwardButton.isEnabled = tab.webView.canGoForward
+        updateStar()
     }
 
     private func focusAddressBar() {
@@ -942,6 +1255,19 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         decisionHandler(.allow)
     }
 
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)   // non-viewable → download
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let tab = tab(for: webView) else { return }
         if let url = webView.url, url.scheme?.hasPrefix("http") == true {
@@ -969,6 +1295,38 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         onURLChange?()
     }
 
+    // MARK: - WKDownloadDelegate (save to ~/Downloads, reveal in Finder when done)
+
+    private var downloadDestinations: [ObjectIdentifier: URL] = [:]
+
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+        let name = suggestedFilename.isEmpty ? "download" : suggestedFilename
+        var destination = dir.appendingPathComponent(name)
+        let base = destination.deletingPathExtension().lastPathComponent
+        let ext = destination.pathExtension
+        var counter = 1
+        while FileManager.default.fileExists(atPath: destination.path) {   // de-dupe
+            let candidate = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+            destination = dir.appendingPathComponent(candidate)
+            counter += 1
+        }
+        downloadDestinations[ObjectIdentifier(download)] = destination
+        completionHandler(destination)
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        if let url = downloadDestinations.removeValue(forKey: ObjectIdentifier(download)) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])   // reveal the saved file in Finder
+        }
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        downloadDestinations.removeValue(forKey: ObjectIdentifier(download))
+    }
+
     // MARK: - WKUIDelegate
 
     /// Links/JS asking for a new window: a sized popup (OAuth/sign-in) opens as a separate panel;
@@ -978,7 +1336,9 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         guard navigationAction.targetFrame == nil else { return nil }
         if windowFeatures.width != nil || windowFeatures.height != nil {
             let popup = BrowserPanel(topSites: topSites, adoptingPopupConfiguration: configuration)
-            onHostNewBrowser?(popup)
+            let size = NSSize(width: windowFeatures.width.map { CGFloat(truncating: $0) } ?? 480,
+                              height: windowFeatures.height.map { CGFloat(truncating: $0) } ?? 640)
+            onHostNewBrowser?(popup, size)
             return popup.webView
         }
         let tab = makeTab(configuration: configuration)   // adopt WebKit's config; it loads the request

@@ -52,7 +52,18 @@ final class WorkItem {
             case .line: return "line.diagonal"
             }
         }
+        /// Annotations (sticky / free text / lines) float freely — they're never tiled into a grid.
+        var isAnnotation: Bool {
+            switch self {
+            case .sticky, .freeText, .line: return true
+            default: return false
+            }
+        }
     }
+
+    /// Window-backed and eligible for grid/column tiling (annotations stay freeform even in a
+    /// tiled project).
+    var isTileable: Bool { window != nil && !kind.isAnnotation }
 
     let id = UUID()
     var name: String
@@ -326,7 +337,7 @@ final class AppModel {
     /// Re-tile a project to match its live layout mode (no undo step — used after add / remove / move /
     /// resize). Windows keep their assigned cells; freeform does nothing.
     func reflowIfTiled(_ project: Project) {
-        let items = project.items.filter { $0.window != nil }
+        let items = project.items.filter { $0.isTileable }
         guard items.count > 1, project.layoutMode != .freeform else { return }
         let frames = layoutCells(items, gridMetrics(project, items))
         for (i, item) in items.enumerated() {
@@ -364,9 +375,9 @@ final class AppModel {
     private var tileDrag: TileDrag?
 
     func beginTileDrag(_ item: WorkItem) {
-        guard let project = project(owning: item), project.layoutMode != .freeform else { return }
-        let placed = project.items.filter { $0.window != nil }
-        guard placed.count > 1, item.window != nil else { return }
+        guard let project = project(owning: item), project.layoutMode != .freeform, item.isTileable else { return }
+        let placed = project.items.filter { $0.isTileable }
+        guard placed.count > 1 else { return }
         if item.gridX < 0 || item.gridY < 0 { reflowIfTiled(project) }   // ensure the window has a cell
         let m = gridMetrics(project, placed)
         let col = max(0, item.gridX), row = max(0, item.gridY)
@@ -424,9 +435,9 @@ final class AppModel {
     private var resizeDrag: ResizeDrag?
 
     func beginResizeDrag(_ item: WorkItem) {
-        guard let project = project(owning: item), project.layoutMode == .grid else { return }
-        let placed = project.items.filter { $0.window != nil }
-        guard placed.count > 1, item.window != nil else { return }
+        guard let project = project(owning: item), project.layoutMode == .grid, item.isTileable else { return }
+        let placed = project.items.filter { $0.isTileable }
+        guard placed.count > 1 else { return }
         if item.gridX < 0 || item.gridY < 0 { reflowIfTiled(project) }
         let m = gridMetrics(project, placed)
         resizeDrag = ResizeDrag(project: project, item: item, metrics: m,
@@ -691,7 +702,7 @@ final class AppModel {
                 undo: { [weak self] in if let it = box.value { self?.performRemoveItem(it) } },
                 redo: { [weak self] in box.value = self?.installItem(from: createdState, in: project, focus: false) })
         }
-        reflowIfTiled(project)   // live grid/columns rearrange to include the new window
+        if item.isTileable { reflowIfTiled(project) }   // annotations don't belong to the grid, so don't reflow for them
         return item
     }
 
@@ -700,7 +711,8 @@ final class AppModel {
     /// just snaps back onto the grid if a gesture somehow reached here without a session.
     func registerGeometryChange(_ item: WorkItem?, from old: NSRect, to new: NSRect) {
         guard let item, old != new else { return }
-        if let project = project(owning: item), project.layoutMode != .freeform {
+        // Annotations move freely (normal undo) even inside a tiled project; only tileable windows snap.
+        if let project = project(owning: item), project.layoutMode != .freeform, item.isTileable {
             reflowIfTiled(project)
             return
         }
@@ -725,7 +737,7 @@ final class AppModel {
     /// the result. Layouts anchor at the group's current top-left, so the project stays roughly where
     /// it is but becomes tidy and non-overlapping.
     func tileProject(_ project: Project, layout: TileLayout = .gridAuto) {
-        let items = project.items.filter { $0.window != nil }
+        let items = project.items.filter { $0.isTileable }   // annotations stay freeform
         guard items.count > 1 else { return }
         // A uniform tile resets cell spans + positions so the grid re-packs cleanly.
         for item in items { item.gridCols = 1; item.gridRows = 1; item.gridX = -1; item.gridY = -1 }
@@ -831,9 +843,18 @@ final class AppModel {
 
     /// Host a popup browser panel (created by WebKit's `createWebViewWith`) as a new item in a
     /// project, so `target="_blank"` / `window.open` open a new browser window.
-    func hostBrowser(_ panel: BrowserPanel, in project: Project) {
+    func hostBrowser(_ panel: BrowserPanel, in project: Project,
+                     size: NSSize = SharedCanvasLayout.defaultPanelSize, centeredOn opener: NSRect? = nil) {
+        // Center a sign-in/OAuth popup over the browser that opened it, so it reads as a modal.
+        let frame: NSRect
+        if let opener {
+            frame = NSRect(x: opener.midX - size.width / 2, y: opener.midY - size.height / 2,
+                           width: size.width, height: size.height)
+        } else {
+            frame = spawnFrame(in: project, size: size)
+        }
         let item = installItem(in: project, kind: .browser, name: "Browser",
-                               frame: spawnFrame(in: project),
+                               frame: frame,
                                contentURL: nil, documentText: nil,
                                terminalDirectory: nil, focus: true,
                                browserPanel: panel)
@@ -994,9 +1015,9 @@ final class AppModel {
                 window.title = title
             }
             panel.onURLChange = { [weak self] in self?.onPersistableChange?() }
-            panel.onHostNewBrowser = { [weak self, weak project] popup in
+            panel.onHostNewBrowser = { [weak self, weak project, weak window] popup, size in
                 guard let self, let project else { return }
-                self.hostBrowser(popup, in: project)
+                self.hostBrowser(popup, in: project, size: size, centeredOn: window?.frame)
             }
             panel.onRequestClose = { [weak window] in
                 guard let window else { return }

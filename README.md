@@ -49,13 +49,15 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
 - **Annotations** — **sticky notes**, **free text**, and **lines / connectors** (orthogonal "elbow"
   routing with rounded corners and arrowheads), all with a floating **options bar** for color,
   thickness, font, and arrowheads.
-- **Tabbed browser** — a single-row toolbar (**close · back · forward · reload · address ·
+- **Tabbed browser** — a single-row toolbar (**close · back · forward · reload · address · ★ ·
   bookmarks**) with the **tab strip below** it (⌘T new / ⌘W close), two-finger swipe and ⌘←/⌘→ for
-  back/forward, and address-bar search. **Ad / tracker blocking is on by default** (EasyList +
-  EasyPrivacy, including cosmetic rules; cached for offline). Onboarding-imported **bookmarks** appear
-  in a bookmarks bar, a bookmarks menu, and on the new-tab page, whose **"Frequently browsed"** grid is
-  powered by imported **history**. Links that open a new window become tabs; sized OAuth/sign-in popups
-  stay separate windows. Open tabs are saved and restored.
+  back/forward, **address-bar autocomplete** (bookmarks + frequent hosts), and **find in page (⌘F)**.
+  **Ad / tracker blocking is on by default** (EasyList + EasyPrivacy, including cosmetic rules; cached
+  for offline). Onboarding-imported **bookmarks** appear in a bookmarks bar (favicons; right-click to
+  rename/remove), a bookmarks menu, and on the new-tab page, whose **"Frequently browsed"** grid is
+  powered by imported **history**; the **★** bookmarks the current page. **Downloads** save to
+  ~/Downloads. Links that open a new window become tabs; sized OAuth/sign-in popups open **centered
+  over the browser** as a modal. Open tabs are saved and restored.
 - **Git Observer** — point a window at any folder containing a git repository and see a
   GitHub-style **contribution graph** for a calendar year (Jan–Dec, one shaded square per day),
   with **◀ / ▶ year navigation** and horizontal scrolling, plus a **commit timeline** (date ·
@@ -82,6 +84,7 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   drag a window into **any** cell (empty cells can be anywhere) and it drops there, or **swaps** with
   whatever's already in that cell, with a highlighted **placeholder** showing the target. In Grid you
   can also **resize a window's edge into the next column/row** to make it **span multiple cells**.
+  **Annotations stay freeform** even in a tiled project — they're never snapped into the grid.
 - **Selection** — a white outline shows what's selected; **Shift-click** to select multiple items
   at once (then DELETE removes the group, ESC deselects). DELETE removes the selection; **⌘Z / ⇧⌘Z**
   undo / redo create, delete, move/resize, and annotation edits.

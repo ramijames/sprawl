@@ -27,11 +27,26 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
   and **history** from Chrome/Brave/Edge/etc., Firefox, and Safari (best-effort). Bookmarks appear in
   a **bookmarks bar**, a **bookmarks menu**, and a **Bookmarks section** on the new-tab page; the
   new-tab **"Frequently browsed"** grid is now powered by imported history.
+- **Browser — address-bar autocomplete.** Typing shows a dropdown of matching bookmarks + frequent
+  hosts (↑/↓ to move, Enter to open, Esc to dismiss, or click).
+- **Browser — bookmark management.** A toolbar **★** bookmarks/unbookmarks the current page;
+  bookmark-bar chips show **favicons** and have a right-click menu (**Rename… / Remove / Copy Link**).
+- **Browser — find in page (⌘F).** A find bar (Enter = next, ↑/↓ = prev/next, Esc = close); the
+  field turns red when there's no match.
+- **Browser — downloads.** Non-viewable responses and download links save to **~/Downloads**
+  (auto-deduped) and reveal in Finder when finished.
+- **Browser — sign-in popups as modals.** A sized `window.open`/OAuth popup opens **centered over the
+  browser that spawned it**, instead of cascading elsewhere on the canvas.
+- **Toggle Sidebar (⌘\\).** A View-menu item + shortcut to show/hide the sidebar.
 
 ### Fixed
 - Grid drag drop-zone is now centered on the dragged window (it used to bias down-and-right).
 - Grid delete no longer leaves a stuck placeholder highlight.
 - Browser popups (OAuth / `window.open`) no longer crash on a duplicate script-message handler.
+- **Annotations stay freeform** in Grid/Columns projects — sticky notes, free text, and lines are no
+  longer tiled, snapped, or counted in the grid.
+- **Free text is placeable in a Grid project** again (adding it no longer triggers a grid reflow that
+  stole its edit focus).
 
 ## 2026-06-30
 

@@ -950,18 +950,22 @@ final class AppModel {
             item.container = container
             activeDocumentItem = item
         case .codeEditor:
-            let panel = CodeEditorPanel(repoPath: contentURL?.path)
-            panel.attach(to: window)
-            panel.onTitleChange = { [weak window, weak item] title in
-                guard let window, let item, !item.userRenamed, !title.isEmpty else { return }
-                window.title = title
+            // CodeEditorPanel is @MainActor (it owns the LSP + editor UI); installItem runs on main.
+            let panel = MainActor.assumeIsolated { () -> CodeEditorPanel in
+                let panel = CodeEditorPanel(repoPath: contentURL?.path)
+                panel.attach(to: window)
+                panel.onTitleChange = { [weak window, weak item] title in
+                    guard let window, let item, !item.userRenamed, !title.isEmpty else { return }
+                    window.title = title
+                }
+                panel.onRepoChange = { [weak self] in self?.onPersistableChange?() }
+                if focus { panel.focus() }
+                return panel
             }
-            panel.onRepoChange = { [weak self] in self?.onPersistableChange?() }
             // Show the restored repo in the title (init's selectRepo runs before onTitleChange is set).
             if !item.userRenamed, let rp = contentURL?.path, !rp.isEmpty {
                 window.title = (rp as NSString).lastPathComponent
             }
-            if focus { panel.focus() }
             item.codeEditor = panel
         case .browser:
             let panel: BrowserPanel
@@ -1226,9 +1230,10 @@ final class AppModel {
         }
         // Compute the heavy values as typed locals so the ItemState initializer below stays
         // cheap for the Swift type-checker (it otherwise times out on this many `??`/`.map` args).
+        let codeRepo = MainActor.assumeIsolated { item.codeEditor?.repoPath }   // @MainActor panel
         let repoPath: String? = [item.gitObserver?.repoPath, item.gitGraph?.repoPath,
                                  item.projectVelocity?.repoPath, item.assistant?.repoPath,
-                                 item.codeEditor?.repoPath, item.diff?.repoPath].compactMap { $0 }.first
+                                 codeRepo, item.diff?.repoPath].compactMap { $0 }.first
         let docText: String? = item.sticky?.text ?? item.freeText?.text
         let colorIndex: Int? = item.sticky?.colorIndex ?? item.freeText?.colorIndex ?? item.line?.colorIndex
         let freeTextSize: Double? = item.freeText.map { Double($0.fontSize) }

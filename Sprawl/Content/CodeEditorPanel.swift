@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import CodeEditSourceEditor
 import CodeEditLanguages
+import CodeEditTextView
 
 /// A node in the repo file tree (a class so `NSOutlineView` can reference it by identity).
 final class FileNode {
@@ -40,6 +41,13 @@ final class CodeFileModel: ObservableObject {
     /// Set when a file is opened from a search hit — the editor scrolls to this line once built.
     var jumpLine: Int?
     lazy var jumpCoordinator = JumpCoordinator(model: self)
+    /// The repo's language server (Swift). The completion bridge reads this live (see CodeEditorBody).
+    var service: LanguageService?
+    /// Open a file at a line — set by the panel; used by go-to-definition (cross-file).
+    var requestOpen: ((URL, Int) -> Void)?
+    /// The live editor controller (set per file) + a ready hook — used by the panel for hover.
+    weak var controller: TextViewController?
+    var onControllerReady: (() -> Void)?
 
     func open(url: URL, line: Int? = nil) {
         fileURL = url
@@ -90,15 +98,29 @@ private struct CodeEditorBody: View {
                 peripherals: .init(showGutter: true, showMinimap: false)
             ),
             state: $editorState,
-            coordinators: [model.jumpCoordinator])
+            coordinators: [
+                model.jumpCoordinator,
+                ControllerCoordinator(onReady: { [model] controller in
+                    model.controller = controller
+                    model.onControllerReady?()
+                }),
+            ],
+            completionDelegate: LSPCompletionProvider(
+                currentURL: { [model] in model.fileURL },
+                serviceProvider: { [model] in model.service }),
+            jumpToDefinitionDelegate: LSPDefinitionProvider(
+                currentURL: { [model] in model.fileURL },
+                serviceProvider: { [model] in model.service },
+                openFile: { [model] url, line in model.requestOpen?(url, line) }))
     }
 }
 
 /// A repo-oriented code editor: pick a repository, browse its file tree, and edit files in a native
 /// source editor (syntax highlighting + line numbers). Edits autosave to disk.
+@MainActor
 final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate,
                              NSMenuDelegate, NSTableViewDataSource, NSTableViewDelegate {
-    private enum Mode { case explorer, search }
+    private enum Mode { case explorer, search, problems }
 
     let containerView = NSView()
     private let outline = NSOutlineView()
@@ -111,6 +133,19 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
     private let panelContainer = NSView()
     private var explorerButton: NSButton?
     private var searchButton: NSButton?
+    private var problemsButton: NSButton?
+
+    // Problems (diagnostics) pane.
+    private let problemsPane = NSView()
+    private let problemsTable = NSTableView()
+    private let problemsScroll = NSScrollView()
+    private var diagnosticsByFile: [URL: [LanguageService.Diagnostic]] = [:]
+    private var diagnostics: [(url: URL, diag: LanguageService.Diagnostic)] = []
+
+    // Hover (dwell → LSP hover popover).
+    private var hoverMonitor: Any?
+    private var hoverTask: Task<Void, Never>?
+    private var hoverPopover: NSPopover?
     private var mode: Mode = .explorer
 
     // Search panel.
@@ -130,6 +165,7 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
 
     private var rootNodes: [FileNode] = []
     private(set) var repoPath: String?
+    private var languages: [String: LanguageService] = [:]   // LSP servers for the repo, keyed by serverKey
     private var gitStatus: [String: (letter: String, color: NSColor)] = [:]   // repo-relative path → status
     private var loadingFile = false
 
@@ -151,9 +187,15 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         buildUI()
         // Autosave edits to the open file (debounced; ignore the programmatic load).
         textObserver = editorModel.$text.dropFirst().sink { [weak self] _ in
-            guard let self, !self.loadingFile, self.editorModel.fileURL != nil else { return }
+            guard let self, !self.loadingFile, let url = self.editorModel.fileURL else { return }
             self.scheduleSave()
+            if let service = self.editorModel.service, service.started { service.didChange(url, text: self.editorModel.text) }
         }
+        editorModel.requestOpen = { [weak self] url, line in self?.openFile(url, line: line) }
+        editorModel.onControllerReady = { [weak self] in
+            self?.containerView.window?.acceptsMouseMovedEvents = true   // enable dwell-hover
+        }
+        installHoverMonitor()
         if let repoPath, !repoPath.isEmpty {
             selectRepo(URL(fileURLWithPath: repoPath), persist: false)
         }
@@ -203,12 +245,14 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
 
         buildActivityBar()
         buildSearchPane()
+        buildProblemsPane()
 
-        // The left panel container hosts either the Explorer tree or the Search pane.
+        // The left panel container hosts the Explorer tree, the Search pane, or the Problems pane.
         panelContainer.translatesAutoresizingMaskIntoConstraints = false
         panelContainer.addSubview(treeScroll)
         panelContainer.addSubview(searchPane)
-        for v in [treeScroll, searchPane] {
+        panelContainer.addSubview(problemsPane)
+        for v in [treeScroll, searchPane, problemsPane] {
             NSLayoutConstraint.activate([
                 v.topAnchor.constraint(equalTo: panelContainer.topAnchor),
                 v.bottomAnchor.constraint(equalTo: panelContainer.bottomAnchor),
@@ -289,9 +333,11 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         }
         let explorer = barButton("doc.on.doc", "Explorer", action: #selector(showExplorer))
         let search = barButton("magnifyingglass", "Search", action: #selector(showSearch))
+        let problems = barButton("exclamationmark.triangle", "Problems", action: #selector(showProblems))
         explorerButton = explorer
         searchButton = search
-        let stack = NSStackView(views: [explorer, search])
+        problemsButton = problems
+        let stack = NSStackView(views: [explorer, search, problems])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 4
@@ -385,17 +431,166 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
 
     @objc private func showExplorer() { setMode(.explorer) }
     @objc private func showSearch() { setMode(.search); searchPane.window?.makeFirstResponder(searchField) }
+    @objc private func showProblems() { setMode(.problems) }
 
     private func setMode(_ m: Mode) {
         mode = m
         treeScroll.isHidden = m != .explorer
         searchPane.isHidden = m != .search
+        problemsPane.isHidden = m != .problems
         updateActivityHighlight()
     }
 
     private func updateActivityHighlight() {
         explorerButton?.contentTintColor = mode == .explorer ? .controlAccentColor : .secondaryLabelColor
         searchButton?.contentTintColor = mode == .search ? .controlAccentColor : .secondaryLabelColor
+        // Problems button: accent while active, red when there are errors, else muted.
+        let hasErrors = diagnostics.contains { $0.diag.severity == 1 }
+        problemsButton?.contentTintColor = mode == .problems ? .controlAccentColor
+            : (hasErrors ? .systemRed : .secondaryLabelColor)
+    }
+
+    // MARK: - Problems (LSP diagnostics)
+
+    private func buildProblemsPane() {
+        problemsPane.translatesAutoresizingMaskIntoConstraints = false
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("problem"))
+        col.resizingMask = .autoresizingMask
+        problemsTable.addTableColumn(col)
+        problemsTable.headerView = nil
+        problemsTable.backgroundColor = .clear
+        problemsTable.rowHeight = 40
+        problemsTable.dataSource = self
+        problemsTable.delegate = self
+        problemsTable.target = self
+        problemsTable.action = #selector(problemClicked)
+        problemsTable.focusRingType = .none
+        problemsScroll.documentView = problemsTable
+        problemsScroll.drawsBackground = false
+        problemsScroll.hasVerticalScroller = true
+        problemsScroll.scrollerStyle = .overlay
+        problemsScroll.translatesAutoresizingMaskIntoConstraints = false
+        problemsPane.addSubview(problemsScroll)
+        NSLayoutConstraint.activate([
+            problemsScroll.topAnchor.constraint(equalTo: problemsPane.topAnchor, constant: 4),
+            problemsScroll.leadingAnchor.constraint(equalTo: problemsPane.leadingAnchor),
+            problemsScroll.trailingAnchor.constraint(equalTo: problemsPane.trailingAnchor),
+            problemsScroll.bottomAnchor.constraint(equalTo: problemsPane.bottomAnchor),
+        ])
+    }
+
+    /// The language server published diagnostics for a file — refresh the flat Problems list.
+    private func updateDiagnostics(_ url: URL, _ diags: [LanguageService.Diagnostic]) {
+        if diags.isEmpty { diagnosticsByFile[url] = nil } else { diagnosticsByFile[url] = diags }
+        diagnostics = diagnosticsByFile
+            .flatMap { url, ds in ds.map { (url: url, diag: $0) } }
+            .sorted { ($0.url.path, $0.diag.line) < ($1.url.path, $1.diag.line) }
+        problemsButton?.toolTip = diagnostics.isEmpty ? "Problems" : "Problems (\(diagnostics.count))"
+        problemsTable.reloadData()
+        updateActivityHighlight()
+    }
+
+    @objc private func problemClicked() {
+        let row = problemsTable.clickedRow >= 0 ? problemsTable.clickedRow : problemsTable.selectedRow
+        guard diagnostics.indices.contains(row) else { return }
+        let hit = diagnostics[row]
+        openFile(hit.url, line: hit.diag.line + 1)   // diag.line is 0-based LSP
+    }
+
+    private func problemCell(_ row: Int) -> NSView {
+        let hit = diagnostics[row]
+        let id = NSUserInterfaceItemIdentifier("ProblemCell")
+        let cell = (problemsTable.makeView(withIdentifier: id, owner: self) as? NSTableCellView) ?? {
+            let c = NSTableCellView(); c.identifier = id
+            let loc = NSTextField(labelWithString: ""); loc.translatesAutoresizingMaskIntoConstraints = false
+            loc.font = .systemFont(ofSize: 10); loc.textColor = .secondaryLabelColor
+            loc.lineBreakMode = .byTruncatingHead; loc.tag = 1
+            let msg = NSTextField(labelWithString: ""); msg.translatesAutoresizingMaskIntoConstraints = false
+            msg.font = .systemFont(ofSize: 11); msg.lineBreakMode = .byTruncatingTail; msg.tag = 2
+            c.addSubview(loc); c.addSubview(msg)
+            NSLayoutConstraint.activate([
+                loc.topAnchor.constraint(equalTo: c.topAnchor, constant: 3),
+                loc.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 8),
+                loc.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -8),
+                msg.topAnchor.constraint(equalTo: loc.bottomAnchor, constant: 1),
+                msg.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 8),
+                msg.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -8),
+            ])
+            return c
+        }()
+        let rel: String
+        if let repoPath, hit.url.path.hasPrefix(repoPath + "/") { rel = String(hit.url.path.dropFirst(repoPath.count + 1)) }
+        else { rel = hit.url.lastPathComponent }
+        (cell.viewWithTag(1) as? NSTextField)?.stringValue = "\(rel):\(hit.diag.line + 1)"
+        let msg = cell.viewWithTag(2) as? NSTextField
+        msg?.stringValue = hit.diag.message
+        msg?.textColor = hit.diag.severity == 1 ? .systemRed : (hit.diag.severity == 2 ? .systemOrange : .labelColor)
+        return cell
+    }
+
+    // MARK: - Hover (dwell → LSP quick info)
+
+    private func installHoverMonitor() {
+        guard hoverMonitor == nil else { return }
+        hoverMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDown, .keyDown, .scrollWheel]) { [weak self] event in
+            MainActor.assumeIsolated { self?.handleHoverEvent(event) }   // event monitors run on main
+            return event
+        }
+    }
+
+    private func handleHoverEvent(_ event: NSEvent) {
+        hoverTask?.cancel()
+        guard event.type == .mouseMoved else {   // any other input dismisses the popover
+            hoverPopover?.close(); hoverPopover = nil
+            return
+        }
+        let point = event.locationInWindow
+        hoverTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)   // dwell
+            guard !Task.isCancelled else { return }
+            self?.showHover(atWindowPoint: point)
+        }
+    }
+
+    private func showHover(atWindowPoint windowPoint: NSPoint) {
+        guard let url = editorModel.fileURL, let service = editorModel.service, service.started,
+              let controller = editorModel.controller, let tv = controller.textView else { return }
+        let point = tv.convert(windowPoint, from: nil)
+        guard tv.visibleRect.contains(point), let offset = tv.layoutManager.textOffsetAtPoint(point) else {
+            hoverPopover?.close(); hoverPopover = nil; return
+        }
+        let position = LSP.offset(tv.string as NSString, to: offset)
+        Task { @MainActor in
+            guard let text = await service.hover(url, line: position.line, character: position.character),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                self.hoverPopover?.close(); self.hoverPopover = nil; return
+            }
+            self.presentHover(text, at: point, in: tv)
+        }
+    }
+
+    private func presentHover(_ text: String, at point: NSPoint, in textView: TextView) {
+        hoverPopover?.close()
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        label.textColor = .labelColor
+        label.preferredMaxLayoutWidth = 380
+        let size = label.fittingSize
+        let pad: CGFloat = 10
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: size.width + pad * 2, height: size.height + pad * 2))
+        label.setFrameOrigin(NSPoint(x: pad, y: pad))
+        container.addSubview(label)
+        let vc = NSViewController()
+        vc.view = container
+        vc.preferredContentSize = container.frame.size
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.appearance = NSAppearance(named: .darkAqua)
+        popover.contentViewController = vc
+        popover.show(relativeTo: NSRect(x: point.x, y: point.y, width: 1, height: 1),
+                     of: textView, preferredEdge: .maxY)
+        hoverPopover = popover
     }
 
     // MARK: - Search (find across the repo)
@@ -490,9 +685,12 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         openFile(hit.url, line: hit.line)
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { searchResults.count }
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        tableView == problemsTable ? diagnostics.count : searchResults.count
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableView == problemsTable { return problemCell(row) }
         let hit = searchResults[row]
         let id = NSUserInterfaceItemIdentifier("SearchHitCell")
         let cell = (tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView) ?? {
@@ -546,6 +744,37 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         if persist { onRepoChange?() }
         updateEmptyState()
         loadGitStatus()
+        resetLanguages()
+    }
+
+    /// Tear down all language servers for the previous repo (new ones start lazily per file).
+    private func resetLanguages() {
+        languages.values.forEach { $0.stop() }
+        languages.removeAll()
+        editorModel.service = nil
+        diagnosticsByFile.removeAll(); diagnostics.removeAll(); problemsTable.reloadData()
+    }
+
+    /// The (already-running) language server for a file's extension, if one exists.
+    private func existingService(for url: URL) -> LanguageService? {
+        LanguageService.descriptor(forExtension: url.pathExtension).flatMap { languages[$0.serverKey] }
+    }
+
+    /// The language server for `url`, starting it lazily on first use (nil if the language is
+    /// unsupported or the server isn't installed). Announces the file once the server is up.
+    private func languageService(for url: URL) -> LanguageService? {
+        guard let desc = LanguageService.descriptor(forExtension: url.pathExtension),
+              let repoPath else { return nil }
+        if let existing = languages[desc.serverKey] { return existing }
+        let service = LanguageService(root: URL(fileURLWithPath: repoPath), serverKey: desc.serverKey,
+                                      command: desc.command, arguments: desc.arguments)
+        service.onDiagnostics = { [weak self] u, diags in self?.updateDiagnostics(u, diags) }
+        languages[desc.serverKey] = service
+        Task { @MainActor in
+            await service.start()
+            if self.editorModel.fileURL == url { service.didOpen(url, text: self.editorModel.text) }
+        }
+        return service
     }
 
     // MARK: - Git status (decorates the tree like VS Code)
@@ -781,9 +1010,13 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         guard size <= Self.maxFileBytes, (try? String(contentsOf: url, encoding: .utf8)) != nil else {
             return   // skip binaries / very large files
         }
+        if let previous = editorModel.fileURL { existingService(for: previous)?.didClose(previous) }
         loadingFile = true
         editorModel.open(url: url, line: line)
         loadingFile = false
+        let service = languageService(for: url)   // lazily starts the right server
+        editorModel.service = service
+        if let service, service.started { service.didOpen(url, text: editorModel.text) }
     }
 
     private func scheduleSave() {

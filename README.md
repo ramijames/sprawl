@@ -36,6 +36,9 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor)) and autosave to disk.
   **Search** across the repo with match-case / whole-word / regex toggles and **Replace All**; click a
   hit to jump to its line.
+- **Code intelligence (LSP)** — autocomplete, go-to-definition, diagnostics (a **Problems** pane), and
+  hover, via language servers: **Swift** out of the box (`xcrun sourcekit-lsp`) and **JS/TS** when
+  `typescript-language-server` is installed. Servers start lazily and are found on your login PATH.
 - **Command palette (⌘K)** — a fuzzy launcher to create tools, run a tiling layout, jump to a project,
   zoom, toggle snapping, undo/redo, or open Preferences, all from the keyboard.
 - **Diff** — see uncommitted changes (`git diff HEAD`) as a **changed-files list** (with per-file

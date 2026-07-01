@@ -25,6 +25,12 @@ pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-ta
 - **Code search & replace.** Find across the repo with **match-case / whole-word / regex** toggles;
   click a result to open the file and **scroll to that line**. **Replace All** rewrites matches across
   every file (regex templates in regex mode, literal otherwise).
+- **Code intelligence (LSP).** The Code editor speaks the **Language Server Protocol** for
+  **autocomplete**, **go-to-definition** (cross-file), **diagnostics** (a **Problems** pane in the
+  activity bar — click to jump, colored by severity), and **hover** (dwell for quick info). **Swift**
+  works out of the box via `xcrun sourcekit-lsp`; **JavaScript / TypeScript** via
+  `typescript-language-server` when it's installed (`npm i -g typescript-language-server typescript`).
+  Servers start lazily per language and are discovered on your login PATH.
 - **Command palette (⌘K).** A Spotlight-style fuzzy launcher: create any tool, run a tiling layout,
   **jump to a project**, zoom, toggle snapping, undo/redo, or open Preferences — keyboard-first
   (↑/↓ to move, ↩ to run, Esc to dismiss).

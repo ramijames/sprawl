@@ -142,10 +142,11 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
     private var diagnosticsByFile: [URL: [LanguageService.Diagnostic]] = [:]
     private var diagnostics: [(url: URL, diag: LanguageService.Diagnostic)] = []
 
-    // Hover (dwell → LSP hover popover).
+    // Hover (dwell → LSP hover popover) + signature help (on "(" / ",").
     private var hoverMonitor: Any?
     private var hoverTask: Task<Void, Never>?
     private var hoverPopover: NSPopover?
+    private var sigPopover: NSPopover?
     private var mode: Mode = .explorer
 
     // Search panel.
@@ -162,6 +163,11 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
     private var searchResults: [SearchHit] = []
     private let editorModel = CodeFileModel()
     private lazy var hostingView = NSHostingView(rootView: CodeFileEditorView(model: editorModel))
+
+    // Open-file tabs (above the editor).
+    private let tabBar = NSView()
+    private let tabStack = NSStackView()
+    private var openTabs: [URL] = []
 
     private var rootNodes: [FileNode] = []
     private(set) var repoPath: String?
@@ -194,6 +200,7 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         editorModel.requestOpen = { [weak self] url, line in self?.openFile(url, line: line) }
         editorModel.onControllerReady = { [weak self] in
             self?.containerView.window?.acceptsMouseMovedEvents = true   // enable dwell-hover
+            self?.applyDiagnosticEmphases()                              // re-underline for the new editor
         }
         installHoverMonitor()
         if let repoPath, !repoPath.isEmpty {
@@ -273,10 +280,37 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         emptyState.addArrangedSubview(emptyIcon)
         emptyState.addArrangedSubview(emptyButton)
 
+        tabBar.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.wantsLayer = true
+        tabBar.layer?.backgroundColor = NSColor(srgbRed: 0x1a / 255, green: 0x1b / 255, blue: 0x20 / 255, alpha: 1).cgColor
+        tabBar.layer?.masksToBounds = true
+        let tabBorder = NSView()   // 1px seam between the tabs and the editor
+        tabBorder.translatesAutoresizingMaskIntoConstraints = false
+        tabBorder.wantsLayer = true
+        tabBorder.layer?.backgroundColor = Palette.panelBorder.cgColor
+        tabBar.addSubview(tabBorder)
+        NSLayoutConstraint.activate([
+            tabBorder.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor),
+            tabBorder.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor),
+            tabBorder.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            tabBorder.heightAnchor.constraint(equalToConstant: 1),
+        ])
+        tabStack.orientation = .horizontal
+        tabStack.spacing = 1
+        tabStack.alignment = .centerY
+        tabStack.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.addSubview(tabStack)
+        NSLayoutConstraint.activate([
+            tabStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 6),
+            tabStack.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
+            tabStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -6),
+        ])
+
         containerView.addSubview(activityBar)
         containerView.addSubview(panelContainer)
         containerView.addSubview(divider)
         containerView.addSubview(hostingView)
+        containerView.addSubview(tabBar)   // in front of the editor, so its gutter can't bleed over the tabs
         containerView.addSubview(emptyState)
 
         NSLayoutConstraint.activate([
@@ -298,9 +332,14 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
             divider.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
             divider.widthAnchor.constraint(equalToConstant: 1),
 
+            tabBar.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            tabBar.topAnchor.constraint(equalTo: containerView.topAnchor),
+            tabBar.heightAnchor.constraint(equalToConstant: 30),
+
             hostingView.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
             hostingView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-            hostingView.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingView.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             hostingView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
         ])
         setMode(.explorer)
@@ -310,7 +349,51 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
     private func updateEmptyState() {
         let hasRepo = repoPath != nil
         emptyState.isHidden = hasRepo
-        for view in [activityBar, panelContainer, divider, hostingView] { view.isHidden = !hasRepo }
+        for view in [activityBar, panelContainer, divider, tabBar, hostingView] { view.isHidden = !hasRepo }
+    }
+
+    // MARK: - Editor tabs
+
+    private func rebuildTabs() {
+        tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for url in openTabs {
+            let tab = EditorTabView(url: url, active: url == editorModel.fileURL,
+                                    onSelect: { [weak self] in self?.openFile(url) },
+                                    onClose: { [weak self] in self?.closeTab(url) })
+            tabStack.addArrangedSubview(tab)
+        }
+        tabBar.isHidden = repoPath == nil
+    }
+
+    /// Close the active editor tab (⌘W). If it was the last one, the editor is left empty (the repo
+    /// tree stays open — the "window" is the repo, tabs are files).
+    func closeCurrentTab() {
+        if let url = editorModel.fileURL { closeTab(url) }
+    }
+
+    private func closeTab(_ url: URL) {
+        guard let index = openTabs.firstIndex(of: url) else { return }
+        openTabs.remove(at: index)
+        existingService(for: url)?.didClose(url)
+        if editorModel.fileURL == url {
+            if let next = openTabs.indices.contains(index) ? openTabs[index] : openTabs.last {
+                openFile(next)
+            } else {
+                clearEditor()
+            }
+        } else {
+            rebuildTabs()
+        }
+    }
+
+    private func clearEditor() {
+        loadingFile = true
+        editorModel.fileURL = nil
+        editorModel.service = nil
+        editorModel.text = ""
+        editorModel.fileID += 1
+        loadingFile = false
+        rebuildTabs()
     }
 
     // MARK: - Activity bar + Search
@@ -488,6 +571,23 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         problemsButton?.toolTip = diagnostics.isEmpty ? "Problems" : "Problems (\(diagnostics.count))"
         problemsTable.reloadData()
         updateActivityHighlight()
+        if url == editorModel.fileURL { applyDiagnosticEmphases() }
+    }
+
+    /// Draw inline squiggle-style underlines under the open file's diagnostics (red errors, orange
+    /// warnings) using the editor's emphasis manager.
+    private func applyDiagnosticEmphases() {
+        guard let url = editorModel.fileURL, let tv = editorModel.controller?.textView,
+              let emphasis = tv.emphasisManager else { return }
+        let text = tv.string as NSString
+        let emphases: [Emphasis] = (diagnosticsByFile[url] ?? []).compactMap { d in
+            let start = LSP.offset(in: text, line: d.line, character: d.character)
+            let end = LSP.offset(in: text, line: d.endLine, character: d.endChar)
+            guard end > start, end <= text.length else { return nil }
+            let color: NSColor = d.severity == 1 ? .systemRed : (d.severity == 2 ? .systemOrange : .systemGray)
+            return Emphasis(range: NSRange(location: start, length: end - start), style: .underline(color: color))
+        }
+        emphasis.replaceEmphases(emphases, for: "lsp.diagnostics")
     }
 
     @objc private func problemClicked() {
@@ -528,7 +628,86 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         return cell
     }
 
-    // MARK: - Hover (dwell → LSP quick info)
+    /// Format the open file via the language server (`textDocument/formatting`) and apply the edits.
+    func formatDocument() {
+        guard let url = editorModel.fileURL, let service = editorModel.service, service.started,
+              editorModel.controller?.textView != nil else { return }
+        Task { @MainActor in
+            let edits = await service.formatting(url)
+            guard !edits.isEmpty, let tv = self.editorModel.controller?.textView else { return }
+            let text = tv.string as NSString
+            // Apply from the end backwards so earlier offsets remain valid.
+            let ranges = edits.map { edit -> (range: NSRange, text: String) in
+                let start = LSP.offset(in: text, line: edit.startLine, character: edit.startChar)
+                let end = LSP.offset(in: text, line: edit.endLine, character: edit.endChar)
+                return (NSRange(location: start, length: max(0, end - start)), edit.newText)
+            }.sorted { $0.range.location > $1.range.location }
+            for edit in ranges { tv.replaceCharacters(in: edit.range, with: edit.text) }
+        }
+    }
+
+    // MARK: - Rename symbol
+
+    /// Rename the symbol under the cursor across the workspace (`textDocument/rename`), prompting for
+    /// the new name and applying the edits to open + on-disk files.
+    func renameSymbol() {
+        guard let url = editorModel.fileURL, let service = editorModel.service, service.started,
+              let tv = editorModel.controller?.textView,
+              let caret = tv.selectionManager?.textSelections.first?.range else { return }
+        let text = tv.string as NSString
+        let pos = LSP.offset(text, to: caret.location)
+
+        let alert = NSAlert()
+        alert.messageText = "Rename Symbol"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = Self.identifier(in: text, at: caret.location)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let newName = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty else { return }
+
+        Task { @MainActor in
+            let edits = await service.rename(url, line: pos.line, character: pos.character, newName: newName)
+            self.applyWorkspaceEdit(edits)
+        }
+    }
+
+    private static func identifier(in text: NSString, at offset: Int) -> String {
+        func isIdent(_ c: unichar) -> Bool { (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 }
+        var start = offset, end = offset
+        while start > 0, isIdent(text.character(at: start - 1)) { start -= 1 }
+        while end < text.length, isIdent(text.character(at: end)) { end += 1 }
+        return end > start ? text.substring(with: NSRange(location: start, length: end - start)) : ""
+    }
+
+    /// Ranges (in `text`) for a file's edits, sorted last-to-first so earlier offsets stay valid.
+    private func ranges(for edits: [LanguageService.TextEdit], in text: NSString) -> [(range: NSRange, text: String)] {
+        edits.map { edit in
+            let start = LSP.offset(in: text, line: edit.startLine, character: edit.startChar)
+            let end = LSP.offset(in: text, line: edit.endLine, character: edit.endChar)
+            return (NSRange(location: start, length: max(0, end - start)), edit.newText)
+        }.sorted { $0.range.location > $1.range.location }
+    }
+
+    private func applyWorkspaceEdit(_ edits: [URL: [LanguageService.TextEdit]]) {
+        for (fileURL, fileEdits) in edits where !fileEdits.isEmpty {
+            if fileURL == editorModel.fileURL, let tv = editorModel.controller?.textView {
+                for edit in ranges(for: fileEdits, in: tv.string as NSString) {
+                    tv.replaceCharacters(in: edit.range, with: edit.text)
+                }
+            } else if let content = try? String(contentsOf: fileURL, encoding: .utf8) {
+                let mutable = NSMutableString(string: content)
+                for edit in ranges(for: fileEdits, in: mutable) { mutable.replaceCharacters(in: edit.range, with: edit.text) }
+                try? (mutable as String).write(to: fileURL, atomically: true, encoding: .utf8)
+            }
+        }
+        loadGitStatus()
+    }
+
+    // MARK: - Hover (dwell → LSP quick info) + signature help
 
     private func installHoverMonitor() {
         guard hoverMonitor == nil else { return }
@@ -540,16 +719,49 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
     }
 
     private func handleHoverEvent(_ event: NSEvent) {
-        hoverTask?.cancel()
-        guard event.type == .mouseMoved else {   // any other input dismisses the popover
+        switch event.type {
+        case .mouseMoved:
+            hoverTask?.cancel()
+            let point = event.locationInWindow
+            hoverTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 400_000_000)   // dwell
+                guard !Task.isCancelled else { return }
+                self?.showHover(atWindowPoint: point)
+            }
+        case .keyDown:
+            hoverTask?.cancel()
             hoverPopover?.close(); hoverPopover = nil
-            return
+            if event.charactersIgnoringModifiers == "(" || event.charactersIgnoringModifiers == "," {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 60_000_000)   // let the character land in the buffer
+                    self?.showSignatureHelp()
+                }
+            } else {
+                sigPopover?.close(); sigPopover = nil
+            }
+        default:
+            hoverTask?.cancel()
+            hoverPopover?.close(); hoverPopover = nil
+            sigPopover?.close(); sigPopover = nil
         }
-        let point = event.locationInWindow
-        hoverTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)   // dwell
-            guard !Task.isCancelled else { return }
-            self?.showHover(atWindowPoint: point)
+    }
+
+    /// Signature help popover at the caret (triggered by typing "(" or ",").
+    private func showSignatureHelp() {
+        guard let url = editorModel.fileURL, let service = editorModel.service, service.started,
+              let tv = editorModel.controller?.textView,
+              let caret = tv.selectionManager?.textSelections.first?.range else { return }
+        let pos = LSP.offset(tv.string as NSString, to: caret.location)
+        Task { @MainActor in
+            guard let label = await service.signatureHelp(url, line: pos.line, character: pos.character),
+                  !label.isEmpty, let tvNow = self.editorModel.controller?.textView,
+                  let window = tvNow.window else { self.sigPopover?.close(); self.sigPopover = nil; return }
+            let screenRect = tvNow.firstRect(forCharacterRange: NSRange(location: caret.location, length: 0), actualRange: nil)
+            let localRect = tvNow.convert(window.convertFromScreen(screenRect), from: nil)
+            self.sigPopover?.close()
+            let popover = self.makePopover(label)
+            popover.show(relativeTo: localRect, of: tvNow, preferredEdge: .maxY)
+            self.sigPopover = popover
         }
     }
 
@@ -572,6 +784,14 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
 
     private func presentHover(_ text: String, at point: NSPoint, in textView: TextView) {
         hoverPopover?.close()
+        let popover = makePopover(text)
+        popover.show(relativeTo: NSRect(x: point.x, y: point.y, width: 1, height: 1),
+                     of: textView, preferredEdge: .maxY)
+        hoverPopover = popover
+    }
+
+    /// A transient dark popover showing wrapped monospace `text` (used for hover + signature help).
+    private func makePopover(_ text: String) -> NSPopover {
         let label = NSTextField(wrappingLabelWithString: text)
         label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         label.textColor = .labelColor
@@ -588,9 +808,7 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.contentViewController = vc
-        popover.show(relativeTo: NSRect(x: point.x, y: point.y, width: 1, height: 1),
-                     of: textView, preferredEdge: .maxY)
-        hoverPopover = popover
+        return popover
     }
 
     // MARK: - Search (find across the repo)
@@ -752,6 +970,7 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         languages.values.forEach { $0.stop() }
         languages.removeAll()
         editorModel.service = nil
+        openTabs.removeAll(); rebuildTabs()
         diagnosticsByFile.removeAll(); diagnostics.removeAll(); problemsTable.reloadData()
     }
 
@@ -1005,18 +1224,21 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
     // MARK: - File open / save
 
     private func openFile(_ url: URL, line: Int? = nil) {
+        if editorModel.fileURL == url, line == nil { return }   // already the active tab
         flushSave()   // commit the previously-open file first
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         guard size <= Self.maxFileBytes, (try? String(contentsOf: url, encoding: .utf8)) != nil else {
             return   // skip binaries / very large files
         }
-        if let previous = editorModel.fileURL { existingService(for: previous)?.didClose(previous) }
+        if let previous = editorModel.fileURL, previous != url { existingService(for: previous)?.didClose(previous) }
         loadingFile = true
         editorModel.open(url: url, line: line)
         loadingFile = false
         let service = languageService(for: url)   // lazily starts the right server
         editorModel.service = service
         if let service, service.started { service.didOpen(url, text: editorModel.text) }
+        if !openTabs.contains(url) { openTabs.append(url) }
+        rebuildTabs()
     }
 
     private func scheduleSave() {
@@ -1032,4 +1254,63 @@ final class CodeEditorPanel: NSObject, NSOutlineViewDataSource, NSOutlineViewDel
         try? editorModel.text.write(to: url, atomically: true, encoding: .utf8)
         loadGitStatus()   // the file may now be modified — refresh the tree decorations
     }
+}
+
+/// A single open-file tab: filename + a close button. Click the chip to switch files; click × to close.
+final class EditorTabView: NSView {
+    private let onSelect: () -> Void
+
+    init(url: URL, active: Bool, onSelect: @escaping () -> Void, onClose: @escaping () -> Void) {
+        self.onSelect = onSelect
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        layer?.backgroundColor = active ? NSColor(white: 1, alpha: 0.10).cgColor : NSColor.clear.cgColor
+
+        let label = NSTextField(labelWithString: url.lastPathComponent)
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = active ? .labelColor : .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let close = TabCloseButton(onClose: onClose)
+        let stack = NSStackView(views: [label, close])
+        stack.orientation = .horizontal
+        stack.spacing = 6
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            heightAnchor.constraint(equalToConstant: 24),
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: 150),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+    override func mouseDown(with event: NSEvent) { onSelect() }
+}
+
+/// The × on an editor tab.
+private final class TabCloseButton: NSButton {
+    private let onClose: () -> Void
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        isBordered = false
+        bezelStyle = .regularSquare
+        imagePosition = .imageOnly
+        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
+        contentTintColor = .secondaryLabelColor
+        target = self
+        action = #selector(clicked)
+        widthAnchor.constraint(equalToConstant: 14).isActive = true
+        heightAnchor.constraint(equalToConstant: 14).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+    @objc private func clicked() { onClose() }
 }

@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         CrashReporter.install()                 // capture crashes to console.log before anything else
         NSScroller.forceOverlayStyleAppWide()   // thin scrollers everywhere, before any are created
+        AdBlocker.shared.prewarm()              // compile ad/tracker rules before any browser opens
         setupMenu()
 
         // Restore the saved workspace before the UI is built, so MainSplitViewController sees a
@@ -162,6 +163,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
                   let key = event.charactersIgnoringModifiers else {
                 return event
+            }
+            // ⌘W closes the active file tab of the selected Code editor (its tabs aren't Tabbable tabs).
+            if key == "w", let editor = self.model.selectedItem?.codeEditor {
+                if !event.isARepeat { editor.closeCurrentTab() }
+                return nil
             }
             // ⌘T / ⌘W — new/close tab on the selected window (browser, terminal, document, files).
             if key == "t" || key == "w", let tabbable = self.model.selectedTabbable {
@@ -326,6 +332,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     action: #selector(MainSplitViewController.tileWindows(_:)),
                                     keyEquivalent: "t")
         tile.keyEquivalentModifierMask = [.command, .option]
+        let format = viewMenu.addItem(withTitle: "Format Document",
+                                      action: #selector(MainSplitViewController.formatDocument(_:)),
+                                      keyEquivalent: "f")
+        format.keyEquivalentModifierMask = [.command, .option, .shift]
+        let rename = viewMenu.addItem(withTitle: "Rename Symbol",
+                                      action: #selector(MainSplitViewController.renameSymbol(_:)),
+                                      keyEquivalent: "r")
+        rename.keyEquivalentModifierMask = [.command, .option]
         viewMenuItem.submenu = viewMenu
 
         NSApp.mainMenu = mainMenu

@@ -15,6 +15,7 @@ struct ChangedFile {
     let adds: Int
     let dels: Int
     var lines: [DiffLine]
+    var staged: Bool = false   // has changes in the git index (set from `git status`)
 }
 
 /// Shows the repository's uncommitted changes (`git diff HEAD`): a changed-files list on the left
@@ -31,6 +32,10 @@ final class DiffPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private let diffScroll = NSScrollView()
     private let splitView = SplitDiffView()
     private let emptyState = NSStackView()
+
+    private let commitBar = NSView()
+    private let commitField = NSTextField()
+    private let commitButton = NSButton()
 
     private var files: [ChangedFile] = []
     private(set) var repoPath: String?
@@ -121,8 +126,44 @@ final class DiffPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         emptyState.addArrangedSubview(emptyIcon)
         emptyState.addArrangedSubview(emptyButton)
 
+        // Commit bar under the file list: a message field + Commit button.
+        commitBar.wantsLayer = true
+        commitBar.layer?.backgroundColor = Palette.panelBody.cgColor
+        commitBar.translatesAutoresizingMaskIntoConstraints = false
+        commitField.placeholderString = "Commit message"
+        commitField.font = .systemFont(ofSize: 12)
+        commitField.translatesAutoresizingMaskIntoConstraints = false
+        commitField.target = self
+        commitField.action = #selector(commitTapped)
+        commitButton.title = "Commit"
+        commitButton.bezelStyle = .rounded
+        commitButton.controlSize = .regular
+        commitButton.target = self
+        commitButton.action = #selector(commitTapped)
+        commitButton.translatesAutoresizingMaskIntoConstraints = false
+        let commitTopBorder = NSView()
+        commitTopBorder.wantsLayer = true
+        commitTopBorder.layer?.backgroundColor = Palette.panelBorder.cgColor
+        commitTopBorder.translatesAutoresizingMaskIntoConstraints = false
+        commitBar.addSubview(commitTopBorder)
+        commitBar.addSubview(commitField)
+        commitBar.addSubview(commitButton)
+        NSLayoutConstraint.activate([
+            commitTopBorder.topAnchor.constraint(equalTo: commitBar.topAnchor),
+            commitTopBorder.leadingAnchor.constraint(equalTo: commitBar.leadingAnchor),
+            commitTopBorder.trailingAnchor.constraint(equalTo: commitBar.trailingAnchor),
+            commitTopBorder.heightAnchor.constraint(equalToConstant: 1),
+            commitField.topAnchor.constraint(equalTo: commitBar.topAnchor, constant: 8),
+            commitField.leadingAnchor.constraint(equalTo: commitBar.leadingAnchor, constant: 8),
+            commitField.trailingAnchor.constraint(equalTo: commitBar.trailingAnchor, constant: -8),
+            commitButton.topAnchor.constraint(equalTo: commitField.bottomAnchor, constant: 6),
+            commitButton.trailingAnchor.constraint(equalTo: commitBar.trailingAnchor, constant: -8),
+            commitButton.bottomAnchor.constraint(equalTo: commitBar.bottomAnchor, constant: -8),
+        ])
+
         containerView.addSubview(topBar)
         containerView.addSubview(filesScroll)
+        containerView.addSubview(commitBar)
         containerView.addSubview(divider)
         containerView.addSubview(diffScroll)
         containerView.addSubview(emptyState)
@@ -143,8 +184,12 @@ final class DiffPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
             filesScroll.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             filesScroll.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-            filesScroll.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            filesScroll.bottomAnchor.constraint(equalTo: commitBar.topAnchor),
             filesScroll.widthAnchor.constraint(equalToConstant: 230),
+
+            commitBar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            commitBar.widthAnchor.constraint(equalToConstant: 230),
+            commitBar.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
 
             divider.leadingAnchor.constraint(equalTo: filesScroll.trailingAnchor),
             divider.topAnchor.constraint(equalTo: topBar.bottomAnchor),
@@ -162,7 +207,7 @@ final class DiffPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private func updateEmptyState() {
         let hasRepo = repoPath != nil
         emptyState.isHidden = hasRepo
-        for view in [topBar, filesScroll, divider, diffScroll] { view.isHidden = !hasRepo }
+        for view in [topBar, filesScroll, commitBar, divider, diffScroll] { view.isHidden = !hasRepo }
     }
 
     // MARK: - Repository
@@ -196,9 +241,10 @@ final class DiffPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let raw = DiffPanel.git(path, ["diff", "HEAD"])
             let parsed = DiffPanel.parse(raw)
+            let staged = DiffPanel.stagedPaths(DiffPanel.git(path, ["status", "--porcelain"]))
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.files = parsed.files
+                self.files = parsed.files.map { var f = $0; f.staged = staged.contains(f.name); return f }
                 self.filesTable.reloadData()
                 let adds = parsed.files.reduce(0) { $0 + $1.adds }
                 let dels = parsed.files.reduce(0) { $0 + $1.dels }
@@ -231,17 +277,22 @@ final class DiffPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         let id = NSUserInterfaceItemIdentifier("DiffFileCell")
         let cell = (tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView) ?? {
             let c = NSTableCellView(); c.identifier = id
+            let check = NSButton(); check.setButtonType(.switch); check.title = ""
+            check.translatesAutoresizingMaskIntoConstraints = false
+            check.target = self; check.action = #selector(toggleStage(_:))
+            check.toolTip = "Stage / unstage this file"
             let name = NSTextField(labelWithString: ""); name.translatesAutoresizingMaskIntoConstraints = false
             name.font = .systemFont(ofSize: 12); name.lineBreakMode = .byTruncatingTail
             let stat = NSTextField(labelWithString: ""); stat.translatesAutoresizingMaskIntoConstraints = false
             stat.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
             stat.setContentHuggingPriority(.required, for: .horizontal)
             stat.setContentCompressionResistancePriority(.required, for: .horizontal)
-            c.addSubview(name); c.addSubview(stat); c.textField = name
+            c.addSubview(check); c.addSubview(name); c.addSubview(stat); c.textField = name
             NSLayoutConstraint.activate([
-                // Filename on the left (truncates), the +/- stat pinned on the right; the name stops
-                // before the stat so it never overlaps it.
-                name.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 8),
+                check.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 6),
+                check.centerYAnchor.constraint(equalTo: c.centerYAnchor),
+                // Filename (truncates) then the +/- stat pinned right; the name stops before the stat.
+                name.leadingAnchor.constraint(equalTo: check.trailingAnchor, constant: 4),
                 name.centerYAnchor.constraint(equalTo: c.centerYAnchor),
                 name.trailingAnchor.constraint(lessThanOrEqualTo: stat.leadingAnchor, constant: -8),
                 stat.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -10),
@@ -251,6 +302,10 @@ final class DiffPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         }()
         cell.textField?.stringValue = (file.name as NSString).lastPathComponent
         cell.textField?.toolTip = file.name
+        if let check = cell.subviews.compactMap({ $0 as? NSButton }).first {
+            check.state = file.staged ? .on : .off
+            check.tag = row
+        }
         if let stat = cell.subviews.compactMap({ $0 as? NSTextField }).last(where: { $0 !== cell.textField }) {
             let s = NSMutableAttributedString()
             s.append(NSAttributedString(string: "+\(file.adds) ", attributes: [.foregroundColor: NSColor.systemGreen]))
@@ -258,6 +313,38 @@ final class DiffPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             stat.attributedStringValue = s
         }
         return cell
+    }
+
+    @objc private func toggleStage(_ sender: NSButton) {
+        guard let path = repoPath, files.indices.contains(sender.tag) else { return }
+        let file = files[sender.tag]
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            _ = DiffPanel.git(path, file.staged ? ["reset", "HEAD", "--", file.name] : ["add", "--", file.name])
+            DispatchQueue.main.async { self?.reload() }
+        }
+    }
+
+    @objc private func commitTapped() {
+        guard let path = repoPath else { return }
+        let message = commitField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty, files.contains(where: { $0.staged }) else { NSSound.beep(); return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            _ = DiffPanel.git(path, ["commit", "-m", message])
+            DispatchQueue.main.async { self?.commitField.stringValue = ""; self?.reload() }
+        }
+    }
+
+    /// Repo-relative paths that have staged (index) changes, from `git status --porcelain`.
+    private static func stagedPaths(_ status: String) -> Set<String> {
+        var set: Set<String> = []
+        for line in status.split(separator: "\n", omittingEmptySubsequences: true) where line.count > 3 {
+            let chars = Array(line)
+            let index = chars[0]
+            var path = String(chars[3...])
+            if let arrow = path.range(of: " -> ") { path = String(path[arrow.upperBound...]) }   // rename
+            if index != " " && index != "?" { set.insert(path) }
+        }
+        return set
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {

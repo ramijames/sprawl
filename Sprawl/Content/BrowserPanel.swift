@@ -1,14 +1,262 @@
 import AppKit
 import WebKit
 
+/// The browser toolbar's close control: a red dot that shows an ✕ on hover (matches window close).
+final class CloseDotButton: NSButton {
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.activeInKeyWindow, .mouseEnteredAndExited],
+                                       owner: self, userInfo: nil))
+    }
+    override func mouseEntered(with event: NSEvent) { image = WindowView.closeImage("xmark.circle.fill") }
+    override func mouseExited(with event: NSEvent) { image = WindowView.closeImage("circle.fill") }
+}
+
+/// App-wide ad / tracker blocker. Blocks a small curated set immediately, then fetches EasyList +
+/// EasyPrivacy (public filter lists), converts them to WebKit content-blocker rules — including the
+/// cosmetic (element-hiding) rules that hide first-party promoted content like Reddit's ads — and
+/// compiles them in chunks (so one malformed rule can't sink the whole list). The raw list is cached
+/// so it keeps working offline and updates in the background for the next launch.
+@MainActor
+final class AdBlocker {
+    static let shared = AdBlocker()
+
+    private struct WeakWebView { weak var view: WKWebView? }
+    private var registered: [WeakWebView] = []
+    private var lists: [WKContentRuleList] = []
+    private var pending: [WKContentRuleList] = []
+    private var flushGeneration = 0
+    private var reloaded = Set<ObjectIdentifier>()
+    private var started = false
+    private let cacheURL: URL
+
+    nonisolated static let sources = [
+        "https://easylist-downloads.adblockplus.org/easylist.txt",
+        "https://easylist-downloads.adblockplus.org/easyprivacy.txt",
+    ]
+    nonisolated static let chunkSize = 10000
+    nonisolated static let maxRules = 50000
+
+    init() {
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                 appropriateFor: nil, create: true))?
+            .appendingPathComponent("Sprawl", isDirectory: true) ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        cacheURL = base.appendingPathComponent("easylist.txt")
+    }
+
+    /// Warm up compilation early (called at app launch) so rule lists are ready before a browser opens.
+    func prewarm() { start() }
+
+    func install(on webView: WKWebView) {
+        registered.append(WeakWebView(view: webView))
+        // Lists already compiled are present from the first paint (no live re-render needed).
+        if !lists.isEmpty {
+            lists.forEach(webView.configuration.userContentController.add)
+            reloaded.insert(ObjectIdentifier(webView))
+        }
+        start()
+    }
+
+    /// Register a freshly-compiled list. Adding a rule list to a *live* web view leaves WebKit in a
+    /// half-painted state, so once compilation settles we add all lists and do one clean reload per
+    /// page (which then renders fresh with blocking already applied).
+    private func apply(_ list: WKContentRuleList) {
+        lists.append(list)
+        pending.append(list)
+        flushGeneration += 1
+        let generation = flushGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self, generation == self.flushGeneration else { return }   // superseded by a later chunk
+            let toAdd = self.pending
+            self.pending.removeAll()
+            for entry in self.registered {
+                guard let view = entry.view else { continue }
+                toAdd.forEach(view.configuration.userContentController.add)
+                let id = ObjectIdentifier(view)
+                if !self.reloaded.contains(id) { self.reloaded.insert(id); view.reload() }
+            }
+        }
+    }
+
+    private func start() {
+        guard !started else { return }
+        started = true
+        compile(rules: Self.baseRules, idPrefix: "sprawl-ab-base")   // curated fallback, immediate
+        if let text = try? String(contentsOf: cacheURL, encoding: .utf8), !text.isEmpty {
+            Task { await self.build(from: text) }        // offline: use the cached list now
+            Task { await self.refreshCache() }           // and refresh it for next launch
+        } else {
+            Task { await self.fetchAndBuild() }          // first run: fetch, cache, apply
+        }
+    }
+
+    private func fetchAndBuild() async {
+        guard let text = await Self.fetchSources() else { return }
+        try? text.write(to: cacheURL, atomically: true, encoding: .utf8)
+        await build(from: text)
+    }
+
+    private func refreshCache() async {
+        if let text = await Self.fetchSources() { try? text.write(to: cacheURL, atomically: true, encoding: .utf8) }
+    }
+
+    private func build(from text: String) async {
+        let chunks = await Task.detached { AdBlocker.convertChunks(text) }.value   // [Data] is Sendable
+        for (index, data) in chunks.enumerated() {
+            guard let json = String(data: data, encoding: .utf8) else { continue }
+            WKContentRuleListStore.default()?.compileContentRuleList(
+                forIdentifier: "sprawl-ab-el-\(index)", encodedContentRuleList: json) { [weak self] list, _ in
+                if let list { self?.apply(list) }
+            }
+        }
+    }
+
+    private func compile(rules: [[String: Any]], idPrefix: String) {
+        let chunks = stride(from: 0, to: rules.count, by: Self.chunkSize).map {
+            Array(rules[$0..<min($0 + Self.chunkSize, rules.count)])
+        }
+        for (index, chunk) in chunks.enumerated() {
+            guard let data = try? JSONSerialization.data(withJSONObject: chunk),
+                  let json = String(data: data, encoding: .utf8) else { continue }
+            WKContentRuleListStore.default()?.compileContentRuleList(
+                forIdentifier: "\(idPrefix)-\(index)", encodedContentRuleList: json) { [weak self] list, _ in
+                if let list { self?.apply(list) }
+            }
+        }
+    }
+
+    nonisolated private static func fetchSources() async -> String? {
+        var combined = ""
+        for source in sources {
+            guard let url = URL(string: source),
+                  let (data, response) = try? await URLSession.shared.data(from: url),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            combined += text + "\n"
+        }
+        return combined.isEmpty ? nil : combined
+    }
+
+    /// Convert an ABP-syntax filter list to WebKit content-blocker rule chunks (serialized JSON).
+    nonisolated static func convertChunks(_ text: String) -> [Data] {
+        let rules = convert(text)
+        return stride(from: 0, to: rules.count, by: chunkSize).compactMap { start in
+            try? JSONSerialization.data(withJSONObject: Array(rules[start..<min(start + chunkSize, rules.count)]))
+        }
+    }
+
+    nonisolated static func convert(_ text: String) -> [[String: Any]] {
+        var rules: [[String: Any]] = []
+        for rawLine in text.split(separator: "\n") {
+            if rules.count >= maxRules { break }
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("!") || line.hasPrefix("[") { continue }
+
+            // Element-hiding (cosmetic) rule: [domains]##selector
+            if let range = line.range(of: "##") {
+                let domainPart = String(line[..<range.lowerBound])
+                let selector = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                guard !selector.isEmpty else { continue }
+                var trigger: [String: Any] = ["url-filter": ".*"]
+                if !domainPart.isEmpty {
+                    var ifDomains: [String] = [], unlessDomains: [String] = []
+                    for domain in domainPart.split(separator: ",") {
+                        if domain.hasPrefix("~") { unlessDomains.append("*" + domain.dropFirst()) }
+                        else { ifDomains.append("*" + domain) }
+                    }
+                    if !ifDomains.isEmpty { trigger["if-domain"] = ifDomains }
+                    if !unlessDomains.isEmpty { trigger["unless-domain"] = unlessDomains }
+                }
+                rules.append(["trigger": trigger, "action": ["type": "css-display-none", "selector": selector]])
+                continue
+            }
+            if line.contains("#@#") || line.contains("#?#") || line.contains("#$#") { continue }   // exceptions / extended
+
+            // Network rule.
+            var isException = false
+            var body = line
+            if body.hasPrefix("@@") { isException = true; body = String(body.dropFirst(2)) }
+            var optionStr = ""
+            if let dollar = body.lastIndex(of: "$") { optionStr = String(body[body.index(after: dollar)...]); body = String(body[..<dollar]) }
+            if body.hasPrefix("/") && body.hasSuffix("/") { continue }   // raw regex — skip
+            guard let filter = urlFilter(from: body) else { continue }
+            var trigger: [String: Any] = ["url-filter": filter]
+            for option in optionStr.split(separator: ",") {
+                let opt = String(option)
+                if opt == "third-party" { trigger["load-type"] = ["third-party"] }
+                else if opt == "~third-party" { trigger["load-type"] = ["first-party"] }
+                else if opt.hasPrefix("domain=") {
+                    var ifDomains: [String] = [], unlessDomains: [String] = []
+                    for domain in opt.dropFirst("domain=".count).split(separator: "|") {
+                        if domain.hasPrefix("~") { unlessDomains.append("*" + domain.dropFirst()) }
+                        else { ifDomains.append("*" + domain) }
+                    }
+                    if !ifDomains.isEmpty { trigger["if-domain"] = ifDomains }
+                    if !unlessDomains.isEmpty { trigger["unless-domain"] = unlessDomains }
+                } else if ["script", "image", "font", "media", "websocket"].contains(opt) {
+                    var types = trigger["resource-type"] as? [String] ?? []; types.append(opt); trigger["resource-type"] = types
+                } else if opt == "stylesheet" {
+                    var types = trigger["resource-type"] as? [String] ?? []; types.append("style-sheet"); trigger["resource-type"] = types
+                }
+                // Unknown/unsupported options (subdocument, csp, redirect, …) are ignored.
+            }
+            rules.append(["trigger": trigger, "action": ["type": isException ? "ignore-previous-rules" : "block"]])
+        }
+        return rules
+    }
+
+    /// Convert an ABP URL pattern to a WebKit `url-filter` regex (matched against a lowercased URL).
+    nonisolated static func urlFilter(from pattern: String) -> String? {
+        guard !pattern.isEmpty else { return nil }
+        var p = pattern.lowercased()
+        var out = ""
+        if p.hasPrefix("||") { out += "^https?://([^/]*\\.)?"; p.removeFirst(2) }
+        else if p.hasPrefix("|") { out += "^"; p.removeFirst() }
+        var trailingAnchor = false
+        if p.hasSuffix("|") { trailingAnchor = true; p.removeLast() }
+        for ch in p {
+            switch ch {
+            case "*": out += ".*"
+            case "^": out += "[^a-z0-9._%-]"   // ABP separator
+            case ".", "?", "+", "(", ")", "[", "]", "{", "}", "\\", "$", "|": out += "\\" + String(ch)
+            default: out += String(ch)
+            }
+        }
+        if trailingAnchor { out += "$" }
+        guard !out.isEmpty, out.canBeConverted(to: .ascii), out != ".*" else { return nil }
+        return out
+    }
+
+    /// A small always-on set of ad/tracker hosts, applied instantly before EasyList finishes loading.
+    static let baseRules: [[String: Any]] = {
+        let domains = [
+            "doubleclick.net", "googlesyndication.com", "google-analytics.com", "googletagmanager.com",
+            "googletagservices.com", "googleadservices.com", "adservice.google.com", "adnxs.com",
+            "amazon-adsystem.com", "scorecardresearch.com", "taboola.com", "outbrain.com", "criteo.com",
+            "pubmatic.com", "rubiconproject.com", "openx.net", "moatads.com", "adroll.com",
+        ]
+        return domains.map { domain in
+            ["trigger": ["url-filter": "^https?://([^/]*\\.)?" + NSRegularExpression.escapedPattern(for: domain),
+                         "load-type": ["third-party"]],
+             "action": ["type": "block"]]
+        }
+    }()
+}
+
 /// Persistent tally of how often each site (host) is opened, so the new-tab page can show the
 /// most-used sites as a favicon grid. Stored as JSON in Application Support, shared by every
 /// browser panel. Keyed by lowercased host.
 final class TopSitesStore {
     struct Site: Codable { var host: String; var name: String; var count: Int }
+    /// An imported bookmark (full URL + title), surfaced in the address bar, bookmarks bar, and menu.
+    struct Bookmark: Codable, Equatable { var title: String; var url: String }
 
     private var sites: [String: Site] = [:]
+    private var bookmarkList: [Bookmark] = []
     private let fileURL: URL
+    private let bookmarksURL: URL
 
     init() {
         let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
@@ -17,7 +265,62 @@ final class TopSitesStore {
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         fileURL = base.appendingPathComponent("topsites.json")
+        bookmarksURL = base.appendingPathComponent("bookmarks.json")
         load()
+        loadBookmarks()
+    }
+
+    // MARK: - Bookmarks + history (imported from other browsers during onboarding)
+
+    /// Add an imported bookmark (deduped by URL). No save — call `flush()` once after a bulk import.
+    func addBookmark(title: String, url: String) {
+        guard let parsed = URL(string: url), parsed.scheme?.hasPrefix("http") == true else { return }
+        guard !bookmarkList.contains(where: { $0.url == url }) else { return }
+        bookmarkList.append(Bookmark(title: title.isEmpty ? url : title, url: url))
+    }
+
+    /// Seed `count` opens for a host at once (used to feed the frequent-sites grid from imported
+    /// history visit counts). No save — call `flush()` once after a bulk import.
+    func seed(host: String, name: String, count: Int) {
+        let key = host.lowercased()
+        guard !key.isEmpty, count > 0 else { return }
+        var site = sites[key] ?? Site(host: key, name: name, count: 0)
+        site.count += count
+        if site.name.isEmpty { site.name = name }
+        sites[key] = site
+    }
+
+    func bookmarks() -> [Bookmark] { bookmarkList }
+
+    /// Bookmarks whose title or URL contains `query` (for address-bar autocomplete), most-relevant
+    /// first (prefix-of-host beats a mid-string match).
+    func bookmarkSuggestions(_ query: String, limit: Int = 6) -> [Bookmark] {
+        let q = query.lowercased()
+        guard !q.isEmpty else { return [] }
+        let matches = bookmarkList.filter { $0.url.lowercased().contains(q) || $0.title.lowercased().contains(q) }
+        return Array(matches.sorted { a, b in
+            func rank(_ bm: Bookmark) -> Int {
+                let host = (URL(string: bm.url)?.host ?? "").lowercased()
+                if host.hasPrefix(q) { return 0 }
+                if bm.title.lowercased().hasPrefix(q) { return 1 }
+                return 2
+            }
+            return rank(a) < rank(b)
+        }.prefix(limit))
+    }
+
+    /// Persist both stores after a bulk import.
+    func flush() { save(); saveBookmarks() }
+
+    private func loadBookmarks() {
+        guard let data = try? Data(contentsOf: bookmarksURL),
+              let decoded = try? JSONDecoder().decode([Bookmark].self, from: data) else { return }
+        bookmarkList = decoded
+    }
+
+    private func saveBookmarks() {
+        guard let data = try? JSONEncoder().encode(bookmarkList) else { return }
+        try? data.write(to: bookmarksURL, options: .atomic)
     }
 
     /// Count one "open" of `host`. Callers de-dupe per navigation so a site isn't counted on every
@@ -153,8 +456,17 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
     private let navBar = NSView()
     private let webContainer = NSView()
     private let addressField = NSTextField()
+    private let closeButton = CloseDotButton()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
+    private let reloadButton = NSButton()
+    private let bookmarksButton = NSButton()
+    private let bookmarksBar = NSView()
+    private let bookmarksStack = NSStackView()
+    private var bookmarksBarHeight: NSLayoutConstraint!
+    private var barBookmarks: [TopSitesStore.Bookmark] = []
+    /// Close the whole browser window (the toolbar's × — the panel is chromeless, no title bar).
+    var onCloseWindow: (() -> Void)?
 
     private let topSites: TopSitesStore
     private var tabs: [Tab] = []
@@ -258,13 +570,24 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         webContainer.wantsLayer = true
         webContainer.translatesAutoresizingMaskIntoConstraints = false
 
+        closeButton.image = WindowView.closeImage("circle.fill")   // the standard red close dot (✕ on hover)
+        closeButton.imagePosition = .imageOnly
+        closeButton.isBordered = false
+        closeButton.contentTintColor = WindowView.closeColor
+        closeButton.target = self
+        closeButton.action = #selector(closeWindow)
+        closeButton.toolTip = "Close browser"
         backButton.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back")
         backButton.target = self
         backButton.action = #selector(goBack)
         forwardButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Forward")
         forwardButton.target = self
         forwardButton.action = #selector(goForward)
-        for button in [backButton, forwardButton] {
+        reloadButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Reload")
+        reloadButton.target = self
+        reloadButton.action = #selector(reloadPage)
+        reloadButton.toolTip = "Reload"
+        for button in [backButton, forwardButton, reloadButton] {
             button.isBordered = false
             button.imagePosition = .imageOnly
             button.contentTintColor = Palette.sidebarText
@@ -277,41 +600,130 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         addressField.target = self
         addressField.action = #selector(go)
 
-        for view in [tabBar, navBar, webContainer] {
-            container.addSubview(view)
-        }
-        for view in [backButton, forwardButton, addressField] {
+        bookmarksButton.image = NSImage(systemSymbolName: "book", accessibilityDescription: "Bookmarks")
+        bookmarksButton.isBordered = false
+        bookmarksButton.imagePosition = .imageOnly
+        bookmarksButton.contentTintColor = Palette.sidebarText
+        bookmarksButton.target = self
+        bookmarksButton.action = #selector(showBookmarksMenu)
+        bookmarksButton.toolTip = "Bookmarks"
+
+        bookmarksBar.wantsLayer = true
+        bookmarksBar.layer?.backgroundColor = Palette.panelBody.cgColor
+        bookmarksBar.translatesAutoresizingMaskIntoConstraints = false
+        bookmarksStack.orientation = .horizontal
+        bookmarksStack.spacing = 6
+        bookmarksStack.translatesAutoresizingMaskIntoConstraints = false
+        bookmarksBar.addSubview(bookmarksStack)
+
+        // Order (top → bottom): address toolbar, tab strip, bookmarks bar, web content.
+        for view in [navBar, tabBar, bookmarksBar, webContainer] { container.addSubview(view) }
+        for view in [closeButton, backButton, forwardButton, reloadButton, addressField, bookmarksButton] {
             view.translatesAutoresizingMaskIntoConstraints = false
             navBar.addSubview(view)
         }
 
         tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 32)
+        bookmarksBarHeight = bookmarksBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            tabBar.topAnchor.constraint(equalTo: container.topAnchor),
+            navBar.topAnchor.constraint(equalTo: container.topAnchor),
+            navBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            navBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            navBar.heightAnchor.constraint(equalToConstant: 38),
+
+            tabBar.topAnchor.constraint(equalTo: navBar.bottomAnchor),
             tabBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             tabBarHeight,
 
-            navBar.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
-            navBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            navBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            navBar.heightAnchor.constraint(equalToConstant: 34),
+            bookmarksBar.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            bookmarksBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            bookmarksBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            bookmarksBarHeight,
 
-            webContainer.topAnchor.constraint(equalTo: navBar.bottomAnchor),
+            webContainer.topAnchor.constraint(equalTo: bookmarksBar.bottomAnchor),
             webContainer.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             webContainer.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             webContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
-            backButton.leadingAnchor.constraint(equalTo: navBar.leadingAnchor, constant: 8),
+            closeButton.leadingAnchor.constraint(equalTo: navBar.leadingAnchor, constant: 10),
+            closeButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 22),
+            backButton.leadingAnchor.constraint(equalTo: closeButton.trailingAnchor, constant: 8),
             backButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
             backButton.widthAnchor.constraint(equalToConstant: 22),
             forwardButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 2),
             forwardButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
             forwardButton.widthAnchor.constraint(equalToConstant: 22),
-            addressField.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 8),
-            addressField.trailingAnchor.constraint(equalTo: navBar.trailingAnchor, constant: -8),
+            reloadButton.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 2),
+            reloadButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
+            reloadButton.widthAnchor.constraint(equalToConstant: 22),
+            addressField.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: 8),
+            addressField.trailingAnchor.constraint(equalTo: bookmarksButton.leadingAnchor, constant: -8),
             addressField.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
+            bookmarksButton.trailingAnchor.constraint(equalTo: navBar.trailingAnchor, constant: -10),
+            bookmarksButton.centerYAnchor.constraint(equalTo: navBar.centerYAnchor),
+            bookmarksButton.widthAnchor.constraint(equalToConstant: 22),
+
+            bookmarksStack.leadingAnchor.constraint(equalTo: bookmarksBar.leadingAnchor, constant: 10),
+            bookmarksStack.trailingAnchor.constraint(lessThanOrEqualTo: bookmarksBar.trailingAnchor, constant: -10),
+            bookmarksStack.centerYAnchor.constraint(equalTo: bookmarksBar.centerYAnchor),
         ])
+        rebuildBookmarksBar()
+    }
+
+    // MARK: - Bookmarks bar + menu
+
+    private func rebuildBookmarksBar() {
+        barBookmarks = topSites.bookmarks()
+        bookmarksStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard !barBookmarks.isEmpty else { bookmarksBarHeight.constant = 0; bookmarksBar.isHidden = true; return }
+        bookmarksBar.isHidden = false
+        bookmarksBarHeight.constant = 30
+        for (index, bm) in barBookmarks.prefix(30).enumerated() {
+            let chip = NSButton(title: Self.shortTitle(bm), target: self, action: #selector(openBookmarkChip(_:)))
+            chip.bezelStyle = .rounded
+            chip.controlSize = .small
+            chip.font = .systemFont(ofSize: 11)
+            chip.tag = index
+            chip.toolTip = bm.url
+            bookmarksStack.addArrangedSubview(chip)
+        }
+    }
+
+    private static func shortTitle(_ bm: TopSitesStore.Bookmark) -> String {
+        let raw = bm.title.isEmpty ? (URL(string: bm.url)?.host ?? bm.url) : bm.title
+        return raw.count > 22 ? String(raw.prefix(22)) + "…" : raw
+    }
+
+    @objc private func openBookmarkChip(_ sender: NSButton) {
+        guard barBookmarks.indices.contains(sender.tag) else { return }
+        openBookmark(barBookmarks[sender.tag].url)
+    }
+
+    @objc private func showBookmarksMenu() {
+        let menu = NSMenu()
+        let all = topSites.bookmarks()
+        if all.isEmpty {
+            menu.addItem(withTitle: "No bookmarks", action: nil, keyEquivalent: "")
+        }
+        for bm in all.prefix(300) {
+            let item = NSMenuItem(title: Self.shortTitle(bm), action: #selector(openBookmarkMenuItem(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = bm.url
+            item.toolTip = bm.url
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bookmarksButton.bounds.height + 4), in: bookmarksButton)
+    }
+
+    @objc private func openBookmarkMenuItem(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? String { openBookmark(url) }
+    }
+
+    private func openBookmark(_ urlString: String) {
+        guard let url = URL(string: urlString), let tab = activeTab else { return }
+        load(url, in: tab)
     }
 
     // MARK: - Tabs
@@ -324,7 +736,7 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         // prior registration first to stay idempotent.
         let focusTracker = FocusTracker()
         let userContent = configuration.userContentController
-        userContent.removeScriptMessageHandler(forName: FocusTracker.messageName)
+        userContent.removeAllScriptMessageHandlers()   // popups adopt the opener's config; avoid a dup-name crash
         userContent.add(focusTracker, name: FocusTracker.messageName)
         userContent.removeAllUserScripts()
         userContent.addUserScript(
@@ -335,6 +747,7 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
         webView.uiDelegate = self
         webView.focusTracker = focusTracker
         webView.allowsBackForwardNavigationGestures = true   // two-finger swipe = back/forward
+        AdBlocker.shared.install(on: webView)   // ad/tracker blocking (EasyList, on by default)
         webView.onNewTab = { [weak self] in self?.addNewTab() }            // ⌘T
         webView.onCloseTab = { [weak self] in self?.closeActiveTab() }     // ⌘W
         webView.translatesAutoresizingMaskIntoConstraints = false
@@ -427,6 +840,9 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
 
     @objc private func goBack() { activeTab?.webView.goBack() }
     @objc private func goForward() { activeTab?.webView.goForward() }
+    @objc private func reloadPage() { activeTab?.webView.reload() }
+    @objc private func closeWindow() { onCloseWindow?() }
+
 
     private func syncChromeFromActive() {
         guard let tab = activeTab else { return }
@@ -456,11 +872,25 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
     }
 
     private func startPageHTML() -> String {
+        func esc(_ s: String) -> String {
+            s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+             .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+        }
         let tiles = topSites.top(24).map { site -> String in
             let host = site.host
             let icon = "https://icons.duckduckgo.com/ip3/\(host).ico"
-            return "<a class=\"tile\" href=\"https://\(host)\" title=\"\(host)\"><img src=\"\(icon)\" loading=\"lazy\" alt=\"\"></a>"
+            return "<a class=\"tile\" href=\"https://\(esc(host))\" title=\"\(esc(host))\"><img src=\"\(icon)\" loading=\"lazy\" alt=\"\"></a>"
         }.joined(separator: "\n")
+        let bookmarks = topSites.bookmarks()
+        let bmItems = bookmarks.prefix(60).map { bm -> String in
+            let host = URL(string: bm.url)?.host ?? ""
+            let icon = "https://icons.duckduckgo.com/ip3/\(host).ico"
+            return "<a class=\"bm\" href=\"\(esc(bm.url))\" title=\"\(esc(bm.url))\"><img src=\"\(icon)\" loading=\"lazy\" alt=\"\"><span>\(esc(bm.title))</span></a>"
+        }.joined(separator: "\n")
+        let bookmarksSection = bookmarks.isEmpty ? "" : """
+        <div class="section">Bookmarks</div>
+        <div class="bmlist">\(bmItems)</div>
+        """
         return """
         <!doctype html>
         <html><head><meta charset="utf-8">
@@ -469,8 +899,11 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
           :root { color-scheme: dark; }
           html, body { margin: 0; height: 100%; background: #212029;
             font-family: -apple-system, system-ui, sans-serif; }
-          .grid { display: flex; flex-wrap: wrap; gap: 18px; padding: 40px;
-            justify-content: center; align-content: flex-start; }
+          .wrap { max-width: 860px; margin: 0 auto; padding: 40px 24px 60px; }
+          .section { color: #8A90A6; font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
+            text-transform: uppercase; margin: 8px 0 16px; }
+          .grid { display: flex; flex-wrap: wrap; gap: 18px;
+            justify-content: flex-start; align-content: flex-start; }
           a.tile { width: 54px; height: 54px; border-radius: 12px; background: #2C2A36;
             display: flex; align-items: center; justify-content: center; overflow: hidden;
             text-decoration: none; box-shadow: 0 1px 3px rgba(0,0,0,0.35); }
@@ -478,10 +911,21 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, WKUIDelegate, Tabbable
             object-fit: cover; }
           a.add { color: #8A90A6; font-size: 26px; line-height: 0; background: transparent;
             box-shadow: none; border: 1px dashed #45444F; }
+          .bmlist { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 32px; }
+          a.bm { display: flex; align-items: center; gap: 8px; max-width: 240px;
+            padding: 7px 12px 7px 8px; border-radius: 8px; background: #2C2A36;
+            text-decoration: none; color: #D8D9E0; font-size: 13px; }
+          a.bm:hover { background: #38363f; }
+          a.bm img { width: 16px; height: 16px; border-radius: 4px; flex: 0 0 16px; }
+          a.bm span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         </style></head>
-        <body><div class="grid">
+        <body><div class="wrap">
+        <div class="section">Frequently browsed</div>
+        <div class="grid">
         \(tiles)
         <a class="tile add" href="sprawl://focus-address" title="Add">+</a>
+        </div>
+        \(bookmarksSection)
         </div></body></html>
         """
     }

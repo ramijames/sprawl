@@ -98,6 +98,13 @@ enum LSP {
         while i < end { if text.character(at: i) == 10 { line += 1; lineStart = i + 1 }; i += 1 }   // \n
         return (line, offset - lineStart)
     }
+
+    /// UTF-16 offset for an LSP (line, character) position within `text`.
+    static func offset(in text: NSString, line: Int, character: Int) -> Int {
+        var currentLine = 0, i = 0
+        while currentLine < line && i < text.length { if text.character(at: i) == 10 { currentLine += 1 }; i += 1 }
+        return min(text.length, i + character)
+    }
 }
 
 /// A completion item adapted to the editor's `CodeSuggestionEntry` protocol.

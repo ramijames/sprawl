@@ -310,6 +310,12 @@ final class MainSplitViewController: NSSplitViewController {
     /// Tile the current project's windows into a uniform grid (⌥⌘T / View menu).
     @objc func tileWindows(_ sender: Any?) { model.tileCurrentProject() }
 
+    /// Format the selected Code editor's open file via its language server (⌥⇧F).
+    @objc func formatDocument(_ sender: Any?) { model.selectedItem?.codeEditor?.formatDocument() }
+
+    /// Rename the symbol under the cursor in the selected Code editor (⌥⌘R).
+    @objc func renameSymbol(_ sender: Any?) { model.selectedItem?.codeEditor?.renameSymbol() }
+
     /// Open the ⌘K command palette: create tools, tile, jump to a project, zoom, etc.
     @objc func showCommandPalette(_ sender: Any?) {
         guard let window = view.window else { return }
@@ -347,6 +353,10 @@ final class MainSplitViewController: NSSplitViewController {
         items.append(PaletteItem(title: "Toggle Snapping", subtitle: "View") { [weak self] in self?.cycleSnap() })
         items.append(PaletteItem(title: "Undo", subtitle: "Edit") { [weak self] in self?.undo(nil) })
         items.append(PaletteItem(title: "Redo", subtitle: "Edit") { [weak self] in self?.redo(nil) })
+        if model.selectedItem?.codeEditor != nil {
+            items.append(PaletteItem(title: "Format Document", subtitle: "Code") { [weak self] in self?.formatDocument(nil) })
+            items.append(PaletteItem(title: "Rename Symbol", subtitle: "Code") { [weak self] in self?.renameSymbol(nil) })
+        }
         items.append(PaletteItem(title: "Preferences…", subtitle: "App") {
             (NSApp.delegate as? AppDelegate)?.showPreferences(nil)
         })

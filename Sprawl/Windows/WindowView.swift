@@ -23,8 +23,8 @@ final class WindowView: NSView, NSTextFieldDelegate {
     }
 
     /// macOS-style close-button red.
-    private static let closeColor = NSColor(srgbRed: 1.0, green: 0.37, blue: 0.34, alpha: 1)
-    private static func closeImage(_ name: String) -> NSImage? {
+    static let closeColor = NSColor(srgbRed: 1.0, green: 0.37, blue: 0.34, alpha: 1)
+    static func closeImage(_ name: String) -> NSImage? {
         let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
         return NSImage(systemSymbolName: name, accessibilityDescription: "Close")?.withSymbolConfiguration(cfg)
     }
@@ -66,6 +66,15 @@ final class WindowView: NSView, NSTextFieldDelegate {
     }
     /// Whether edge/corner resize is enabled (off for auto-sizing free text).
     var resizable = true
+    /// Drop the title bar (no title/close dot) but keep the body border, rounded corners, resize, and
+    /// the top strip as a drag handle — used by the browser, which draws its own toolbar row.
+    var hidesHeader = false {
+        didSet {
+            guard hidesHeader != oldValue else { return }
+            closeButton.isHidden = hidesHeader
+            needsLayout = true; needsDisplay = true
+        }
+    }
     /// Corner radius for the body/glass/selection (smaller for annotations).
     var bodyCornerRadius: CGFloat = 16 {
         didSet { guard bodyCornerRadius != oldValue else { return }; needsLayout = true; needsDisplay = true }
@@ -90,6 +99,9 @@ final class WindowView: NSView, NSTextFieldDelegate {
     /// A *resize* drag began / updated — drives live grid resize-to-span (placeholder) in grid projects.
     var onResizeBegan: (() -> Void)?
     var onResizeChanged: (() -> Void)?
+    /// A move/resize gesture ended (mouse up) — fires even if the frame didn't change, so live-tiling
+    /// drag sessions (and their placeholder highlight) always get torn down.
+    var onDragEnded: (() -> Void)?
     /// Double-click the header title committed a new name.
     var onRename: ((String) -> Void)?
 
@@ -177,6 +189,13 @@ final class WindowView: NSView, NSTextFieldDelegate {
         if chromeless {
             // No header/close: the content fills the whole frame.
             contentContainer.frame = b
+            layer?.shadowPath = CGPath(roundedRect: b, cornerWidth: bodyCornerRadius, cornerHeight: bodyCornerRadius, transform: nil)
+            return
+        }
+        if hidesHeader {
+            // No title bar: content is inset on all sides (so the edge resize band is exposed and the
+            // body border/rounding still shows), but there's no header row.
+            contentContainer.frame = NSRect(x: pad, y: pad, width: max(0, b.width - 2 * pad), height: max(0, b.height - 2 * pad))
             layer?.shadowPath = CGPath(roundedRect: b, cornerWidth: bodyCornerRadius, cornerHeight: bodyCornerRadius, transform: nil)
             return
         }
@@ -301,7 +320,7 @@ final class WindowView: NSView, NSTextFieldDelegate {
         }
 
         // Centered title in the header strip, kept clear of the close dot (hidden while editing).
-        if !isEditingTitle && !transparentBody {
+        if !isEditingTitle && !transparentBody && !hidesHeader {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 12, weight: .medium),
                 .foregroundColor: isSelected ? Palette.panelHeaderTextSelected : Palette.panelHeaderText,
@@ -508,6 +527,7 @@ final class WindowView: NSView, NSTextFieldDelegate {
         switch dragMode {
         case .move, .resize:
             if frame != dragStartFrame { onGeometryCommitted?(dragStartFrame, frame) }
+            onDragEnded?()   // always clear any live-tiling drag session (even on a no-op click)
         case .none:
             break
         }

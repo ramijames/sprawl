@@ -275,34 +275,74 @@ final class OnboardingPanel: NSObject {
     private func importSelectedBrowsers() {
         for entry in browserChecks where entry.button.state == .on {
             switch entry.browser.kind {
-            case .chromium: Self.importBookmarks(from: entry.browser.url, into: topSites)
-            case .firefox: Self.importFirefox(profile: entry.browser.url, into: topSites)
-            case .safari: Self.importSafari(plist: entry.browser.url, into: topSites)
+            case .chromium:
+                Self.importChromiumBookmarks(from: entry.browser.url, into: topSites)
+                Self.importChromiumHistory(bookmarksFile: entry.browser.url, into: topSites)
+            case .firefox:
+                Self.importFirefox(profile: entry.browser.url, into: topSites)
+            case .safari:
+                Self.importSafari(plist: entry.browser.url, into: topSites)
+                Self.importSafariHistory(into: topSites)
             }
+        }
+        topSites.flush()   // one write after the whole import (addBookmark/seed don't save)
+    }
+
+    /// Record a bookmark: keep the full URL/title, and seed the host into the frequent-sites grid.
+    private static func addBookmark(_ urlString: String, _ title: String, into store: TopSitesStore) {
+        guard let host = URLComponents(string: urlString)?.host, !host.isEmpty else { return }
+        let name = title.isEmpty ? host : title
+        store.addBookmark(title: name, url: urlString)
+        store.record(host: host, name: name)
+    }
+
+    /// Run a read-only sqlite query (tab-separated) and return one row per line, split into columns.
+    private static func sqliteRows(_ dbPath: String, _ query: String) -> [[String]] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = ["-readonly", "-separator", "\t", dbPath, query]
+        let pipe = Pipe(); process.standardOutput = pipe; process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").map { $0.components(separatedBy: "\t") }
+    }
+
+    /// Seed the frequent-sites grid from history rows of `(url, title, visitCount)`.
+    private static func seedHistory(_ rows: [[String]], into store: TopSitesStore) {
+        for row in rows where row.count >= 3 {
+            guard let host = URLComponents(string: row[0])?.host, !host.isEmpty,
+                  let visits = Int(row[2]), visits > 0 else { continue }
+            store.seed(host: host, name: row[1].isEmpty ? host : row[1], count: visits)
         }
     }
 
-    /// Firefox bookmarks live in places.sqlite; copy it (it may be locked) and query read-only.
+    /// Copy a possibly-locked sqlite DB to a temp file, query it, and clean up. Returns [] on failure.
+    private static func withCopiedDB(_ source: URL, _ query: String) -> [[String]] {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("sprawl-db-\(UUID().uuidString).sqlite")
+        guard (try? FileManager.default.copyItem(at: source, to: tmp)) != nil else { return [] }
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        return sqliteRows(tmp.path, query)
+    }
+
+    /// Firefox: places.sqlite holds both bookmarks and history (visit_count). Copy it (it may be
+    /// locked) and query read-only.
     private static func importFirefox(profile url: URL, into store: TopSitesStore) {
         let places = url.appendingPathComponent("places.sqlite")
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("sprawl-places-\(UUID().uuidString).sqlite")
         guard (try? FileManager.default.copyItem(at: places, to: tmp)) != nil else { return }
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = ["-readonly", tmp.path,
-            "SELECT p.url FROM moz_bookmarks b JOIN moz_places p ON b.fk = p.id WHERE b.type = 1 AND p.url LIKE 'http%' LIMIT 300;"]
-        let pipe = Pipe(); process.standardOutput = pipe; process.standardError = Pipe()
-        guard (try? process.run()) != nil else { return }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard let text = String(data: data, encoding: .utf8) else { return }
-        for line in text.split(separator: "\n") {
-            if let host = URLComponents(string: String(line))?.host, !host.isEmpty {
-                store.record(host: host, name: host)
-            }
+        for row in sqliteRows(tmp.path,
+            "SELECT p.url, IFNULL(b.title, p.title) FROM moz_bookmarks b JOIN moz_places p ON b.fk = p.id "
+            + "WHERE b.type = 1 AND p.url LIKE 'http%' LIMIT 500;") where !row.isEmpty {
+            addBookmark(row[0], row.count > 1 ? row[1] : "", into: store)
         }
+        seedHistory(sqliteRows(tmp.path,
+            "SELECT url, IFNULL(title,''), visit_count FROM moz_places WHERE url LIKE 'http%' "
+            + "AND visit_count > 0 ORDER BY visit_count DESC LIMIT 500;"), into: store)
     }
 
     /// Safari bookmarks are a binary plist (reading it requires Full Disk Access — best-effort).
@@ -312,11 +352,11 @@ final class OnboardingPanel: NSObject {
         else { return }
         var imported = 0
         func walk(_ node: [String: Any]) {
-            guard imported < 300 else { return }
+            guard imported < 500 else { return }
             if node["WebBookmarkType"] as? String == "WebBookmarkTypeLeaf",
-               let urlString = node["URLString"] as? String,
-               let host = URLComponents(string: urlString)?.host, !host.isEmpty {
-                store.record(host: host, name: host)
+               let urlString = node["URLString"] as? String {
+                let title = (node["URIDictionary"] as? [String: Any])?["title"] as? String ?? ""
+                addBookmark(urlString, title, into: store)
                 imported += 1
             }
             if let children = node["Children"] as? [[String: Any]] {
@@ -326,19 +366,26 @@ final class OnboardingPanel: NSObject {
         walk(root)
     }
 
-    /// Best-effort: walk a Chromium Bookmarks JSON tree and seed the top-sites grid by host.
-    private static func importBookmarks(from url: URL, into store: TopSitesStore) {
+    /// Safari history lives in ~/Library/Safari/History.db (needs Full Disk Access — best-effort).
+    private static func importSafariHistory(into store: TopSitesStore) {
+        let db = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Safari/History.db")
+        guard FileManager.default.fileExists(atPath: db.path) else { return }
+        seedHistory(withCopiedDB(db,
+            "SELECT url, '', visit_count FROM history_items WHERE url LIKE 'http%' "
+            + "ORDER BY visit_count DESC LIMIT 500;"), into: store)
+    }
+
+    /// Walk a Chromium Bookmarks JSON tree, keeping the full URL/title and seeding the grid by host.
+    private static func importChromiumBookmarks(from url: URL, into store: TopSitesStore) {
         guard let data = try? Data(contentsOf: url),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let roots = root["roots"] as? [String: Any] else { return }
         var imported = 0
         func walk(_ node: [String: Any]) {
-            guard imported < 300 else { return }
-            if node["type"] as? String == "url",
-               let urlString = node["url"] as? String,
-               let host = URLComponents(string: urlString)?.host, !host.isEmpty {
-                let name = (node["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? host
-                store.record(host: host, name: name)
+            guard imported < 500 else { return }
+            if node["type"] as? String == "url", let urlString = node["url"] as? String {
+                addBookmark(urlString, node["name"] as? String ?? "", into: store)
                 imported += 1
             }
             if let children = node["children"] as? [[String: Any]] {
@@ -348,6 +395,15 @@ final class OnboardingPanel: NSObject {
         for key in ["bookmark_bar", "other", "synced"] {
             if let node = roots[key] as? [String: Any] { walk(node) }
         }
+    }
+
+    /// Chromium history is the `History` sqlite next to `Bookmarks` (locked while the browser runs).
+    private static func importChromiumHistory(bookmarksFile: URL, into store: TopSitesStore) {
+        let history = bookmarksFile.deletingLastPathComponent().appendingPathComponent("History")
+        guard FileManager.default.fileExists(atPath: history.path) else { return }
+        seedHistory(withCopiedDB(history,
+            "SELECT url, IFNULL(title,''), visit_count FROM urls WHERE url LIKE 'http%' "
+            + "ORDER BY visit_count DESC LIMIT 500;"), into: store)
     }
 
     // MARK: - Small builders

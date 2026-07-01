@@ -3,6 +3,36 @@
 A running log of notable changes to Sprawl, newest first. Dates are `YYYY-MM-DD`. The app is
 pre-1.0 (`MARKETING_VERSION 0.1.0`), so entries are dated rather than version-tagged for now.
 
+## 2026-07-01
+
+### Added
+- **Deeper code intelligence (LSP).** **Format Document** (⌥⇧F), **Rename Symbol** (⌥⌘R — prompts
+  for a name and applies the edits across open + on-disk files), **inline diagnostic squiggles**
+  (red/orange underlines under errors/warnings), and **signature help** (typing `(` or `,` shows the
+  active signature at the caret). Also in the Command Palette.
+- **Editor tabs.** The Code editor opens files as tabs — click to switch, × or **⌘W** to close.
+- **Diff staging + commit.** The Diff app now has a per-file **stage/unstage checkbox** (reflecting
+  `git status`) and a **commit message box + Commit button** that commits the staged changes.
+- **Flexible grid.** A grid project now gives each window an **explicit cell**: empty cells can be
+  anywhere, and dragging a window drops it into whatever cell you're over (empty → moves there;
+  occupied → the two **swap**). Grid is now the **default** layout for new projects.
+- **Browser — single-row toolbar.** The browser drops its title bar for a one-line toolbar:
+  **close (red dot) · back · forward · reload · address · bookmarks**, with the **tab strip below**
+  it. Keeps standard resize, border, and rounded corners.
+- **Browser — ad / tracker blocking (on by default).** Fetches **EasyList + EasyPrivacy** (public
+  filter lists), converts them to WebKit content-blocker rules **including cosmetic/element-hiding
+  rules** (which hide first-party promoted content like Reddit's ads), compiles them in chunks, and
+  caches them for offline use. A small curated set blocks instantly while the lists load.
+- **Browser — bookmarks & history import.** Onboarding now imports **full bookmarks** (URL + title)
+  and **history** from Chrome/Brave/Edge/etc., Firefox, and Safari (best-effort). Bookmarks appear in
+  a **bookmarks bar**, a **bookmarks menu**, and a **Bookmarks section** on the new-tab page; the
+  new-tab **"Frequently browsed"** grid is now powered by imported history.
+
+### Fixed
+- Grid drag drop-zone is now centered on the dragged window (it used to bias down-and-right).
+- Grid delete no longer leaves a stuck placeholder highlight.
+- Browser popups (OAuth / `window.open`) no longer crash on a duplicate script-message handler.
+
 ## 2026-06-30
 
 ### Added

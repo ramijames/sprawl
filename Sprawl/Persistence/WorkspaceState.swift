@@ -124,7 +124,10 @@ struct ItemState: Codable {
     var browserTabs: [String]?
     var browserActiveTab: Int?
 
-    /// How many grid cells the window spans in a live grid project (1×1 unless resized to span).
+    /// The window's cell in a live grid project (`gridX`/`gridY`, -1 if unassigned) and how many cells
+    /// it spans (1×1 unless resized).
+    var gridX: Int?
+    var gridY: Int?
     var gridCols: Int?
     var gridRows: Int?
 }

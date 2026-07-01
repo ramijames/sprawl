@@ -32,24 +32,30 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
 - **Documents** — a plain-text editor for notes and scratch text (open / save), with word-wrap.
 - **Code editor** — point it at a repository and browse the **file tree** (single-click toggles a
   folder, double-click renames, right-click for Open in Finder / Open in Tab / Copy Path / Copy
-  Relative Path / Delete-to-Trash); open files edit with syntax highlighting + line numbers (via
-  [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor)) and autosave to disk.
-  **Search** across the repo with match-case / whole-word / regex toggles and **Replace All**; click a
-  hit to jump to its line.
-- **Code intelligence (LSP)** — autocomplete, go-to-definition, diagnostics (a **Problems** pane), and
-  hover, via language servers: **Swift** out of the box (`xcrun sourcekit-lsp`) and **JS/TS** when
-  `typescript-language-server` is installed. Servers start lazily and are found on your login PATH.
+  Relative Path / Delete-to-Trash); open files as **tabs** (⌘W closes) with syntax highlighting + line
+  numbers (via [CodeEditSourceEditor](https://github.com/CodeEditApp/CodeEditSourceEditor)) and autosave
+  to disk. **Search** across the repo with match-case / whole-word / regex toggles and **Replace All**;
+  click a hit to jump to its line.
+- **Code intelligence (LSP)** — autocomplete, go-to-definition, diagnostics (a **Problems** pane +
+  inline **squiggles**), hover, **signature help**, **Format Document** (⌥⇧F), and **Rename Symbol**
+  (⌥⌘R, across files), via language servers: **Swift** out of the box (`xcrun sourcekit-lsp`) and
+  **JS/TS** when `typescript-language-server` is installed. Servers start lazily and are found on your
+  login PATH.
 - **Command palette (⌘K)** — a fuzzy launcher to create tools, run a tiling layout, jump to a project,
   zoom, toggle snapping, undo/redo, or open Preferences, all from the keyboard.
 - **Diff** — see uncommitted changes (`git diff HEAD`) as a **changed-files list** (with per-file
-  +/- counts) beside a GitHub-style **side-by-side** diff for the selected file.
+  +/- counts) beside a GitHub-style **side-by-side** diff for the selected file. **Stage/unstage** each
+  file and **commit** the staged changes with a message, in-panel.
 - **Annotations** — **sticky notes**, **free text**, and **lines / connectors** (orthogonal "elbow"
   routing with rounded corners and arrowheads), all with a floating **options bar** for color,
   thickness, font, and arrowheads.
-- **Tabbed browser** — each browser panel has tabs (⌘T for a new one), a most-opened-sites
-  favicon grid as its new-tab page, two-finger swipe and ⌘←/⌘→ for back/forward, and address-bar
-  search. Links that open a new window become tabs; sized OAuth/sign-in popups stay separate
-  windows. Open tabs are saved and restored.
+- **Tabbed browser** — a single-row toolbar (**close · back · forward · reload · address ·
+  bookmarks**) with the **tab strip below** it (⌘T new / ⌘W close), two-finger swipe and ⌘←/⌘→ for
+  back/forward, and address-bar search. **Ad / tracker blocking is on by default** (EasyList +
+  EasyPrivacy, including cosmetic rules; cached for offline). Onboarding-imported **bookmarks** appear
+  in a bookmarks bar, a bookmarks menu, and on the new-tab page, whose **"Frequently browsed"** grid is
+  powered by imported **history**. Links that open a new window become tabs; sized OAuth/sign-in popups
+  stay separate windows. Open tabs are saved and restored.
 - **Git Observer** — point a window at any folder containing a git repository and see a
   GitHub-style **contribution graph** for a calendar year (Jan–Dec, one shaded square per day),
   with **◀ / ▶ year navigation** and horizontal scrolling, plus a **commit timeline** (date ·
@@ -69,12 +75,13 @@ with full PTY access and the canvas is GPU-composited for smooth zooming over ma
   windows, laid out spatially across the same surface (not hidden behind tabs). Its name is a
   **zoom-invariant white label** above the top-left corner (constant size at any zoom). Click a folder
   (or its name) to select the project and open a **project options bar** to rename it, set its color,
-  and choose a **tiling mode** (Freeform / Grid / Columns). Click a project in the sidebar to pan/zoom
-  straight to it; drag a folder to move the whole project.
+  and choose a **tiling mode** (Freeform / Grid / Columns — **Grid** is the default). Click a project
+  in the sidebar to pan/zoom straight to it; drag a folder to move the whole project.
 - **Live tiling** — set a project to **Grid** or **Columns** and it stays tidy on its own: it
-  re-tiles whenever a window is added, removed, or moved, and dragging a window opens a highlighted
-  **placeholder** showing the slot it'll drop into (Freeform leaves windows wherever you put them). In
-  Grid, **resize a window's edge into the next column/row** to make it **span multiple cells**.
+  re-tiles whenever a window is added or removed. In **Grid**, each window owns an **explicit cell** —
+  drag a window into **any** cell (empty cells can be anywhere) and it drops there, or **swaps** with
+  whatever's already in that cell, with a highlighted **placeholder** showing the target. In Grid you
+  can also **resize a window's edge into the next column/row** to make it **span multiple cells**.
 - **Selection** — a white outline shows what's selected; **Shift-click** to select multiple items
   at once (then DELETE removes the group, ESC deselects). DELETE removes the selection; **⌘Z / ⇧⌘Z**
   undo / redo create, delete, move/resize, and annotation edits.
